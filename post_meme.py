@@ -79,16 +79,12 @@ def send_to_telegram(meme):
         print("ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID env vars must be set.", file=sys.stderr)
         sys.exit(1)
 
-    title = meme.get("title", "")[:1000]
-    subreddit = meme.get("subreddit", "")
     image_url = meme["url"]
-    caption = f"{title}\n\nr/{subreddit}"
 
     api_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
     payload = {
         "chat_id": CHAT_ID,
         "photo": image_url,
-        "caption": caption,
     }
     data = urllib.parse.urlencode(payload).encode()
     req = urllib.request.Request(api_url, data=data, method="POST")
