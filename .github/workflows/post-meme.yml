@@ -1,0 +1,35 @@
+name: Post Meme to Telegram
+
+on:
+  schedule:
+    # Runs every 10 minutes. GitHub's scheduler is best-effort and can
+    # occasionally be delayed a few minutes during high load, but it's free
+    # and needs no server of your own.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}  # lets you manually trigger a run from the Actions tab
+
+jobs:
+  post-meme:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Post a meme
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python post_meme.py
+
+      - name: Commit updated history file
+        run: |
+          git config --global user.name "meme-bot"
+          git config --global user.email "meme-bot@users.noreply.github.com"
+          git add posted.json || true
+          git diff --cached --quiet || git commit -m "Update posted meme history [skip ci]"
+          git push || true
