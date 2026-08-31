@@ -21,13 +21,18 @@ import urllib.parse
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # e.g. @yourchannelusername or numeric chat id
 
-# Subreddits to pull memes from (free, public, no auth required)
-SUBREDDITS = ["memes", "dankmemes", "wholesomememes", "funny", "ProgrammerHumor"]
+# Subreddits to pull memes from — broadly relatable, mainstream meme content
+SUBREDDITS = [
+    "memes", "dankmemes", "MemeEconomy", "AdviceAnimals",
+    "facepalm", "therewasanattempt", "comedyheaven", "terriblefacebookmemes",
+]
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "posted.json")
-HISTORY_LIMIT = 300  # remember last N posted memes to avoid repeats
+HISTORY_LIMIT = 2000  # remember many more posted memes now that the pool is much bigger
 
-MEME_API_URL = "https://meme-api.com/gimme/{subreddit}/10"
+# Fetch a much bigger batch per subreddit so the pool doesn't run dry at a
+# post-every-10-minutes pace
+MEME_API_URL = "https://meme-api.com/gimme/{subreddit}/50"
 
 
 def load_history():
@@ -46,16 +51,19 @@ def save_history(history):
 
 
 def fetch_candidate_memes():
-    """Fetch a batch of memes from a random subreddit via meme-api.com"""
-    subreddit = random.choice(SUBREDDITS)
-    url = MEME_API_URL.format(subreddit=subreddit)
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=15) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    memes = data.get("memes", [])
+    """Fetch a batch of memes from two random subreddits via meme-api.com"""
+    chosen_subreddits = random.sample(SUBREDDITS, k=min(2, len(SUBREDDITS)))
+    all_memes = []
+    for subreddit in chosen_subreddits:
+        url = MEME_API_URL.format(subreddit=subreddit)
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        memes = data.get("memes", [])
+        all_memes.extend(memes)
     # Filter out NSFW/spoiler flagged posts just in case
-    memes = [m for m in memes if not m.get("nsfw") and not m.get("spoiler")]
-    return memes
+    all_memes = [m for m in all_memes if not m.get("nsfw") and not m.get("spoiler")]
+    return all_memes
 
 
 def pick_new_meme(history, attempts=5):
