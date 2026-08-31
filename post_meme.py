@@ -22,7 +22,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # e.g. @yourchannelusername or numeric chat id
 
 # Subreddits to pull memes from — the most universally mainstream, broad-appeal ones
-SUBREDDITS = ["memeexchangecommunist"]
+SUBREDDITS = ["memeexchangecommunist","AnimeGirls"]
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "posted.json")
 HISTORY_LIMIT = 2000  # remember many more posted memes now that the pool is much bigger
@@ -67,7 +67,7 @@ def fetch_candidate_memes():
     # Filter out NSFW/spoiler posts and anything below the popularity bar
     all_memes = [
         m for m in all_memes
-        if not m.get("spoiler") and m.get("ups", 0) >= MIN_UPVOTES
+        if m.get("ups", 0) >= MIN_UPVOTES
     ]
     return all_memes
 
