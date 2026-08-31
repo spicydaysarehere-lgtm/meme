@@ -22,7 +22,7 @@ BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # e.g. @yourchannelusername or numeric chat id
 
 # Subreddits to pull memes from — the most universally mainstream, broad-appeal ones
-SUBREDDITS = ["memes"]
+SUBREDDITS = ["memeexchangecommunist"]
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "posted.json")
 HISTORY_LIMIT = 2000  # remember many more posted memes now that the pool is much bigger
