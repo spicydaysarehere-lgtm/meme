@@ -21,11 +21,8 @@ import urllib.parse
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")  # e.g. @yourchannelusername or numeric chat id
 
-# Subreddits to pull memes from — broadly relatable, mainstream meme content
-SUBREDDITS = [
-    "memes", "dankmemes", "MemeEconomy", "AdviceAnimals",
-    "facepalm", "therewasanattempt", "comedyheaven", "terriblefacebookmemes",
-]
+# Subreddits to pull memes from — the most universally mainstream, broad-appeal ones
+SUBREDDITS = ["memes", "funny", "wholesomememes", "AdviceAnimals"]
 
 HISTORY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "posted.json")
 HISTORY_LIMIT = 2000  # remember many more posted memes now that the pool is much bigger
@@ -33,6 +30,12 @@ HISTORY_LIMIT = 2000  # remember many more posted memes now that the pool is muc
 # Fetch a much bigger batch per subreddit so the pool doesn't run dry at a
 # post-every-10-minutes pace
 MEME_API_URL = "https://meme-api.com/gimme/{subreddit}/50"
+
+# Only post memes that already proved broadly popular on Reddit itself —
+# a high upvote count is the closest free signal we have for "most people
+# will find this relatable/funny", since it means thousands of people
+# already reacted well to it.
+MIN_UPVOTES = 5000
 
 
 def load_history():
@@ -61,8 +64,11 @@ def fetch_candidate_memes():
             data = json.loads(resp.read().decode("utf-8"))
         memes = data.get("memes", [])
         all_memes.extend(memes)
-    # Filter out NSFW/spoiler flagged posts just in case
-    all_memes = [m for m in all_memes if not m.get("nsfw") and not m.get("spoiler")]
+    # Filter out NSFW/spoiler posts and anything below the popularity bar
+    all_memes = [
+        m for m in all_memes
+        if not m.get("nsfw") and not m.get("spoiler") and m.get("ups", 0) >= MIN_UPVOTES
+    ]
     return all_memes
 
 
