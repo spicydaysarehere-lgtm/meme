@@ -1,5 +1,8 @@
 name: Post Meme to Telegram
 
+permissions:
+  contents: write
+
 on:
   schedule:
     # Runs every 10 minutes. GitHub's scheduler is best-effort and can
