@@ -67,7 +67,7 @@ def fetch_candidate_memes():
     # Filter out NSFW/spoiler posts and anything below the popularity bar
     all_memes = [
         m for m in all_memes
-        if not m.get("nsfw") and not m.get("spoiler") and m.get("ups", 0) >= MIN_UPVOTES
+        if not m.get("spoiler") and m.get("ups", 0) >= MIN_UPVOTES
     ]
     return all_memes
 
