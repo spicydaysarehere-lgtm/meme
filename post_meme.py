@@ -643,7 +643,7 @@ def main():
     print()
     print("========================================")
     print("       REDDIT → TELEGRAM BOT")
-    print("       INTERVAL: ~15 MINUTES")
+    print("       INTERVAL: ~30 MINUTES")
     print("========================================")
 
     if not BOT_TOKEN:
