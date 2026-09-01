@@ -3,16 +3,18 @@
 """
 Telegram Reddit Image Bot
 
-- Fetches images from configured subreddits using meme-api.com
-- Posts ONE image to Telegram
-- NO caption
-- NO upvote filter
-- NO NSFW filter
-- Prevents reposting the same image URL
-- Saves posted URLs in posted.json
-- Easy to add more subreddits later
+Features:
+    - Fetches images from configured subreddits
+    - Posts ONE image to Telegram
+    - No caption
+    - No upvote filter
+    - No NSFW filter
+    - Prevents duplicate images
+    - Detects duplicates even when the image URL changes
+    - Saves image hashes in posted.json
+    - Easy to add more subreddits later
 
-Required GitHub Actions environment variables:
+Required environment variables:
 
     TELEGRAM_BOT_TOKEN
     TELEGRAM_CHAT_ID
@@ -23,6 +25,7 @@ import sys
 import json
 import time
 import random
+import hashlib
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -32,7 +35,7 @@ import urllib.parse
 # SUBREDDITS
 # ============================================================
 
-# Add more subreddits here whenever you want.
+# Add more subreddits here later.
 #
 # Example:
 #
@@ -52,23 +55,28 @@ SUBREDDITS = [
 # SETTINGS
 # ============================================================
 
-# How many subreddits to check per run.
+# Number of subreddits to check on each run.
 #
-# You currently have only one, so AnimeGirls is checked.
-# If you add more, this will randomly choose 2 of them.
+# Currently there is only one.
+# If you add more, the bot randomly chooses 2 each run.
 SUBREDDITS_PER_RUN = 2
 
 
-# Number of posts requested from each subreddit.
+# Number of Reddit posts requested per subreddit.
 MEMES_PER_SUBREDDIT = 50
 
 
-# Number of previously posted URLs to remember.
-HISTORY_LIMIT = 2000
+# Maximum number of image hashes to remember.
+HISTORY_LIMIT = 5000
 
 
-# Number of attempts to fetch a new image.
+# Number of attempts to find a new image.
 FETCH_ATTEMPTS = 5
+
+
+# Maximum size of an image we will download for duplicate checking.
+# 15 MB is more than enough for normal Reddit images.
+MAX_IMAGE_SIZE = 15 * 1024 * 1024
 
 
 # Meme API
@@ -107,10 +115,26 @@ HISTORY_FILE = os.path.join(
 # ============================================================
 
 def load_history():
-    """Load previously posted image URLs."""
+    """
+    Load duplicate history.
+
+    The history format is:
+
+    {
+        "urls": [...],
+        "ids": [...],
+        "hashes": [...]
+    }
+    """
 
     if not os.path.exists(HISTORY_FILE):
-        return []
+
+        return {
+            "urls": [],
+            "ids": [],
+            "hashes": []
+        }
+
 
     try:
 
@@ -120,19 +144,48 @@ def load_history():
             encoding="utf-8"
         ) as file:
 
-            history = json.load(file)
+            data = json.load(file)
 
-        if isinstance(history, list):
-            return history
+
+        # ----------------------------------------------------
+        # New history format
+        # ----------------------------------------------------
+
+        if isinstance(data, dict):
+
+            return {
+                "urls": data.get("urls", []),
+                "ids": data.get("ids", []),
+                "hashes": data.get("hashes", [])
+            }
+
+
+        # ----------------------------------------------------
+        # Compatibility with your old posted.json
+        # ----------------------------------------------------
+
+        if isinstance(data, list):
+
+            return {
+                "urls": data,
+                "ids": [],
+                "hashes": []
+            }
+
 
     except Exception as error:
 
         print(
-            f"Warning: Could not load posted.json: {error}",
+            f"Warning: Could not load history: {error}",
             file=sys.stderr
         )
 
-    return []
+
+    return {
+        "urls": [],
+        "ids": [],
+        "hashes": []
+    }
 
 
 # ============================================================
@@ -140,11 +193,29 @@ def load_history():
 # ============================================================
 
 def save_history(history):
-    """Save recently posted image URLs."""
+    """
+    Save duplicate history.
+    """
 
     try:
 
-        history = history[-HISTORY_LIMIT:]
+        history["urls"] = history.get(
+            "urls",
+            []
+        )[-HISTORY_LIMIT:]
+
+
+        history["ids"] = history.get(
+            "ids",
+            []
+        )[-HISTORY_LIMIT:]
+
+
+        history["hashes"] = history.get(
+            "hashes",
+            []
+        )[-HISTORY_LIMIT:]
+
 
         with open(
             HISTORY_FILE,
@@ -158,24 +229,124 @@ def save_history(history):
                 indent=2
             )
 
+
     except Exception as error:
 
         print(
-            f"Warning: Could not save posted.json: {error}",
+            f"Warning: Could not save history: {error}",
             file=sys.stderr
         )
 
 
 # ============================================================
-# FETCH POSTS
+# DOWNLOAD IMAGE
+# ============================================================
+
+def download_image(image_url):
+    """
+    Download an image and return its bytes.
+
+    Used only to calculate the image hash.
+
+    Returns:
+        bytes or None
+    """
+
+    try:
+
+        request = urllib.request.Request(
+            image_url,
+            headers={
+                "User-Agent": "TelegramMemeBot/1.0"
+            }
+        )
+
+
+        with urllib.request.urlopen(
+            request,
+            timeout=20
+        ) as response:
+
+            content_length = response.headers.get(
+                "Content-Length"
+            )
+
+
+            # Avoid unexpectedly huge files.
+            if content_length:
+
+                try:
+
+                    if int(content_length) > MAX_IMAGE_SIZE:
+
+                        print(
+                            "Image is too large to check."
+                        )
+
+                        return None
+
+                except ValueError:
+
+                    pass
+
+
+            image_data = response.read(
+                MAX_IMAGE_SIZE + 1
+            )
+
+
+            if len(image_data) > MAX_IMAGE_SIZE:
+
+                print(
+                    "Image is too large to check."
+                )
+
+                return None
+
+
+            return image_data
+
+
+    except Exception as error:
+
+        print(
+            f"Could not download image for duplicate "
+            f"checking: {error}",
+            file=sys.stderr
+        )
+
+        return None
+
+
+# ============================================================
+# IMAGE HASH
+# ============================================================
+
+def get_image_hash(image_data):
+    """
+    Generate SHA-256 hash of the actual image.
+
+    Two identical image files produce the same hash.
+    """
+
+    return hashlib.sha256(
+        image_data
+    ).hexdigest()
+
+
+# ============================================================
+# FETCH REDDIT POSTS
 # ============================================================
 
 def fetch_candidate_memes():
     """
-    Fetch posts from the configured subreddits.
+    Fetch posts from configured subreddits.
 
-    There is deliberately no content/NSFW/upvote filtering
-    performed by this script.
+    There is deliberately:
+        - no upvote filter
+        - no NSFW filter
+        - no title filter
+        - no popularity filter
     """
 
     if not SUBREDDITS:
@@ -218,6 +389,7 @@ def fetch_candidate_memes():
             subreddit
         )
 
+
         url = MEME_API_URL.format(
             subreddit=encoded_subreddit,
             count=MEMES_PER_SUBREDDIT
@@ -244,7 +416,9 @@ def fetch_candidate_memes():
                 )
 
 
-            data = json.loads(raw_data)
+            data = json.loads(
+                raw_data
+            )
 
 
             memes = data.get(
@@ -255,7 +429,10 @@ def fetch_candidate_memes():
 
             if isinstance(memes, list):
 
-                all_memes.extend(memes)
+                all_memes.extend(
+                    memes
+                )
+
 
                 print(
                     f"r/{subreddit}: "
@@ -301,23 +478,36 @@ def fetch_candidate_memes():
 
 
 # ============================================================
-# PICK NEW IMAGE
+# FIND NEW IMAGE
 # ============================================================
 
 def pick_new_meme(history):
     """
-    Pick a random image that hasn't been posted before.
+    Find an image that has NEVER been posted before.
 
-    No upvote filtering.
-    No NSFW filtering.
-    No title filtering.
-    No subreddit filtering.
+    Duplicate detection uses:
 
-    The only selection requirement is that the post
-    contains a URL and hasn't already been posted.
+        1. Reddit post ID
+        2. Image URL
+        3. SHA-256 hash of the actual image
+
+    The image hash is the strongest protection because
+    the same picture can have different URLs.
     """
 
-    seen = set(history)
+    seen_urls = set(
+        history.get("urls", [])
+    )
+
+
+    seen_ids = set(
+        history.get("ids", [])
+    )
+
+
+    seen_hashes = set(
+        history.get("hashes", [])
+    )
 
 
     for attempt in range(
@@ -325,8 +515,9 @@ def pick_new_meme(history):
         FETCH_ATTEMPTS + 1
     ):
 
+        print()
         print(
-            f"\nFetch attempt "
+            f"Fetch attempt "
             f"{attempt}/{FETCH_ATTEMPTS}"
         )
 
@@ -345,8 +536,9 @@ def pick_new_meme(history):
             continue
 
 
-        # Completely randomize the results.
-        random.shuffle(candidates)
+        random.shuffle(
+            candidates
+        )
 
 
         for meme in candidates:
@@ -356,21 +548,116 @@ def pick_new_meme(history):
             )
 
 
-            # No URL = cannot send it.
+            reddit_id = meme.get(
+                "postLink",
+                ""
+            )
+
+
+            # ------------------------------------------------
+            # Basic URL check
+            # ------------------------------------------------
+
             if not image_url:
+
                 continue
 
 
-            # Skip previously posted images.
-            if image_url in seen:
+            # ------------------------------------------------
+            # Check URL
+            # ------------------------------------------------
+
+            if image_url in seen_urls:
+
+                print(
+                    "Skipped duplicate URL."
+                )
+
                 continue
+
+
+            # ------------------------------------------------
+            # Check Reddit post
+            # ------------------------------------------------
+
+            if reddit_id and reddit_id in seen_ids:
+
+                print(
+                    "Skipped duplicate Reddit post."
+                )
+
+                continue
+
+
+            # ------------------------------------------------
+            # Download image for hash comparison
+            # ------------------------------------------------
+
+            print(
+                f"Checking image: {image_url}"
+            )
+
+
+            image_data = download_image(
+                image_url
+            )
+
+
+            # If the image can't be downloaded,
+            # we can still use URL/post-ID checking.
+            if image_data is None:
+
+                print(
+                    "Could not calculate image hash. "
+                    "Using URL/post ID only."
+                )
+
+                return meme
+
+
+            # ------------------------------------------------
+            # Calculate SHA-256 hash
+            # ------------------------------------------------
+
+            image_hash = get_image_hash(
+                image_data
+            )
+
+
+            # ------------------------------------------------
+            # Check actual image
+            # ------------------------------------------------
+
+            if image_hash in seen_hashes:
+
+                print(
+                    "SKIPPED: This exact image "
+                    "was already posted."
+                )
+
+                continue
+
+
+            # ------------------------------------------------
+            # New image found
+            # ------------------------------------------------
+
+            print(
+                "NEW IMAGE FOUND!"
+            )
+
+
+            # Store temporary hash so main()
+            # can save it after Telegram succeeds.
+            meme["_image_hash"] = image_hash
 
 
             return meme
 
 
         print(
-            "All returned images were already posted."
+            "No completely new images found "
+            "in this batch."
         )
 
 
@@ -383,9 +670,9 @@ def pick_new_meme(history):
 
 def send_to_telegram(meme):
     """
-    Send ONLY the image to Telegram.
+    Send ONLY the image.
 
-    No caption is sent.
+    No caption.
     """
 
     if not BOT_TOKEN:
@@ -430,11 +717,9 @@ def send_to_telegram(meme):
 
 
     # ========================================================
-    # IMPORTANT:
+    # ONLY image + chat ID.
     #
-    # ONLY chat_id and photo are sent.
-    #
-    # There is NO caption.
+    # NO CAPTION.
     # ========================================================
 
     payload = {
@@ -487,10 +772,13 @@ def send_to_telegram(meme):
             f"r/{meme.get('subreddit', 'unknown')}"
         )
         print(
-            f"Image URL: {image_url}"
+            f"Image: {image_url}"
         )
         print(
             "Caption: NONE"
+        )
+        print(
+            "Duplicate protection: ACTIVE"
         )
         print("========================================")
 
@@ -547,12 +835,12 @@ def main():
     print()
     print("========================================")
     print("        TELEGRAM IMAGE BOT")
-    print("        RUNNING EVERY 5 MINUTES")
+    print("        RUN: EVERY ~5 MINUTES")
     print("========================================")
 
 
     # --------------------------------------------------------
-    # Check credentials
+    # Check Telegram credentials
     # --------------------------------------------------------
 
     if not BOT_TOKEN:
@@ -597,29 +885,38 @@ def main():
 
 
     print(
-        f"Previously posted: {len(history)}"
+        f"Previously stored URLs: "
+        f"{len(history['urls'])}"
+    )
+
+
+    print(
+        f"Previously stored image hashes: "
+        f"{len(history['hashes'])}"
     )
 
 
     # --------------------------------------------------------
-    # Find image
+    # Find a new image
     # --------------------------------------------------------
 
-    meme = pick_new_meme(history)
+    meme = pick_new_meme(
+        history
+    )
 
 
     if not meme:
 
         print()
         print(
-            "Could not find a new image."
+            "Could not find a completely new image."
         )
 
         return
 
 
     # --------------------------------------------------------
-    # Send image
+    # Post image
     # --------------------------------------------------------
 
     success = send_to_telegram(
@@ -637,7 +934,8 @@ def main():
 
 
     # --------------------------------------------------------
-    # Save successful post
+    # Save duplicate information
+    # ONLY after successful Telegram post.
     # --------------------------------------------------------
 
     image_url = meme.get(
@@ -645,24 +943,51 @@ def main():
     )
 
 
+    reddit_id = meme.get(
+        "postLink",
+        ""
+    )
+
+
+    image_hash = meme.get(
+        "_image_hash"
+    )
+
+
     if image_url:
 
-        history.append(
+        history["urls"].append(
             image_url
         )
 
-        save_history(
-            history
+
+    if reddit_id:
+
+        history["ids"].append(
+            reddit_id
         )
+
+
+    if image_hash:
+
+        history["hashes"].append(
+            image_hash
+        )
+
+
+    save_history(
+        history
+    )
 
 
     print()
     print(
-        "History saved."
+        "Duplicate history updated."
     )
 
+
     print(
-        "Finished successfully."
+        "Bot finished successfully."
     )
 
 
@@ -671,4 +996,5 @@ def main():
 # ============================================================
 
 if __name__ == "__main__":
+
     main()
