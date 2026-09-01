@@ -47,7 +47,7 @@ import urllib.parse
 # ]
 
 SUBREDDITS = [
-    "AnimeGirls",
+    "ecchi",
 ]
 
 
