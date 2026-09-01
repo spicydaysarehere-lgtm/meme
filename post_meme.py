@@ -27,7 +27,6 @@ import urllib.parse
 
 SUBREDDITS = [
     "ecchi",
-    "ecchiManhua",
     "OverOppai",
     "CFNM_Hentai",
     "EcchiCurves"
@@ -644,7 +643,7 @@ def main():
     print()
     print("========================================")
     print("       REDDIT → TELEGRAM BOT")
-    print("       INTERVAL: ~30 MINUTES")
+    print("       INTERVAL: ~15 MINUTES")
     print("========================================")
 
     if not BOT_TOKEN:
