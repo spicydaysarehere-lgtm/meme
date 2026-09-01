@@ -1,9 +1,18 @@
-[
-  "",
-  "https://i.redd.it/t6m9oyf7ammh1.gif",
-  "https://i.redd.it/v5sd1c39z2bh1.png",
-  "https://i.redd.it/b8fjchrpehgh1.gif",
-  "https://i.redd.it/wp5k41iz9vlh1.png",
-  "https://i.redd.it/l2chg76sghmh1.png",
-  "https://i.redd.it/758aka6d73mh1.png"
-]
+{
+  "urls": [
+    "",
+    "https://i.redd.it/t6m9oyf7ammh1.gif",
+    "https://i.redd.it/v5sd1c39z2bh1.png",
+    "https://i.redd.it/b8fjchrpehgh1.gif",
+    "https://i.redd.it/wp5k41iz9vlh1.png",
+    "https://i.redd.it/l2chg76sghmh1.png",
+    "https://i.redd.it/758aka6d73mh1.png",
+    "https://i.redd.it/bn69gfe7c6kh1.png"
+  ],
+  "ids": [
+    "https://redd.it/1vrxauo"
+  ],
+  "hashes": [
+    "550a90458f7fffe082fd201b3a468db67e7d2dadb17f8565467625d44b2139ee"
+  ]
+}
