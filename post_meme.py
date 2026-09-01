@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 
 """
-Telegram Meme Bot
+Telegram Reddit Image Bot
 
-Fetches random images from Reddit through meme-api.com
-and posts them to a Telegram channel.
+- Fetches images from configured subreddits using meme-api.com
+- Posts ONE image to Telegram
+- NO caption
+- NO upvote filter
+- NO NSFW filter
+- Prevents reposting the same image URL
+- Saves posted URLs in posted.json
+- Easy to add more subreddits later
 
-Current subreddit:
-    AnimeGirls
+Required GitHub Actions environment variables:
 
-To add more subreddits later, simply edit SUBREDDITS below.
-
-Required environment variables:
     TELEGRAM_BOT_TOKEN
     TELEGRAM_CHAT_ID
 """
@@ -27,17 +29,18 @@ import urllib.parse
 
 
 # ============================================================
-# CONFIGURATION
+# SUBREDDITS
 # ============================================================
 
-# Add more subreddit names here in the future.
+# Add more subreddits here whenever you want.
 #
 # Example:
+#
 # SUBREDDITS = [
 #     "AnimeGirls",
-#     "memes",
-#     "funny",
 #     "AnimeMemes",
+#     "funny",
+#     "memes",
 # ]
 
 SUBREDDITS = [
@@ -45,12 +48,18 @@ SUBREDDITS = [
 ]
 
 
-# Number of different subreddits to use on each run.
-# If you have only one subreddit, it automatically uses one.
+# ============================================================
+# SETTINGS
+# ============================================================
+
+# How many subreddits to check per run.
+#
+# You currently have only one, so AnimeGirls is checked.
+# If you add more, this will randomly choose 2 of them.
 SUBREDDITS_PER_RUN = 2
 
 
-# Number of memes requested from each subreddit.
+# Number of posts requested from each subreddit.
 MEMES_PER_SUBREDDIT = 50
 
 
@@ -58,46 +67,66 @@ MEMES_PER_SUBREDDIT = 50
 HISTORY_LIMIT = 2000
 
 
-# How many times to try fetching memes if something fails.
+# Number of attempts to fetch a new image.
 FETCH_ATTEMPTS = 5
 
 
 # Meme API
-MEME_API_URL = "https://meme-api.com/gimme/{subreddit}/{count}"
+MEME_API_URL = (
+    "https://meme-api.com/gimme/{subreddit}/{count}"
+)
 
 
-# Telegram credentials
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+BOT_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN"
+)
+
+CHAT_ID = os.environ.get(
+    "TELEGRAM_CHAT_ID"
+)
 
 
-# History file will be created beside this Python file.
+# ============================================================
+# HISTORY FILE
+# ============================================================
+
 HISTORY_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
+    os.path.dirname(
+        os.path.abspath(__file__)
+    ),
     "posted.json"
 )
 
 
 # ============================================================
-# HISTORY FUNCTIONS
+# LOAD HISTORY
 # ============================================================
 
 def load_history():
-    """
-    Load the list of previously posted meme URLs.
-    """
+    """Load previously posted image URLs."""
 
     if not os.path.exists(HISTORY_FILE):
         return []
 
     try:
-        with open(HISTORY_FILE, "r", encoding="utf-8") as file:
+
+        with open(
+            HISTORY_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
             history = json.load(file)
 
         if isinstance(history, list):
             return history
 
     except Exception as error:
+
         print(
             f"Warning: Could not load posted.json: {error}",
             file=sys.stderr
@@ -106,18 +135,31 @@ def load_history():
     return []
 
 
+# ============================================================
+# SAVE HISTORY
+# ============================================================
+
 def save_history(history):
-    """
-    Save the most recent meme URLs.
-    """
+    """Save recently posted image URLs."""
 
     try:
+
         history = history[-HISTORY_LIMIT:]
 
-        with open(HISTORY_FILE, "w", encoding="utf-8") as file:
-            json.dump(history, file, indent=2)
+        with open(
+            HISTORY_FILE,
+            "w",
+            encoding="utf-8"
+        ) as file:
+
+            json.dump(
+                history,
+                file,
+                indent=2
+            )
 
     except Exception as error:
+
         print(
             f"Warning: Could not save posted.json: {error}",
             file=sys.stderr
@@ -125,51 +167,62 @@ def save_history(history):
 
 
 # ============================================================
-# REDDIT / MEME API
+# FETCH POSTS
 # ============================================================
 
 def fetch_candidate_memes():
     """
-    Fetch memes from randomly selected subreddits.
+    Fetch posts from the configured subreddits.
 
-    The only thing you need to change in the future
-    is the SUBREDDITS list at the top.
+    There is deliberately no content/NSFW/upvote filtering
+    performed by this script.
     """
 
     if not SUBREDDITS:
+
         print(
             "ERROR: SUBREDDITS list is empty.",
             file=sys.stderr
         )
+
         return []
 
-    # Randomly choose subreddits.
+
     number_to_choose = min(
         SUBREDDITS_PER_RUN,
         len(SUBREDDITS)
     )
+
 
     chosen_subreddits = random.sample(
         SUBREDDITS,
         number_to_choose
     )
 
+
     all_memes = []
 
+
     print(
-        "Checking subreddits: "
+        "Checking: "
         + ", ".join(
             f"r/{subreddit}"
             for subreddit in chosen_subreddits
         )
     )
 
+
     for subreddit in chosen_subreddits:
 
+        encoded_subreddit = urllib.parse.quote(
+            subreddit
+        )
+
         url = MEME_API_URL.format(
-            subreddit=urllib.parse.quote(subreddit),
+            subreddit=encoded_subreddit,
             count=MEMES_PER_SUBREDDIT
         )
+
 
         request = urllib.request.Request(
             url,
@@ -178,6 +231,7 @@ def fetch_candidate_memes():
             }
         )
 
+
         try:
 
             with urllib.request.urlopen(
@@ -185,126 +239,153 @@ def fetch_candidate_memes():
                 timeout=20
             ) as response:
 
-                raw_data = response.read().decode("utf-8")
+                raw_data = response.read().decode(
+                    "utf-8"
+                )
+
 
             data = json.loads(raw_data)
 
-            memes = data.get("memes", [])
+
+            memes = data.get(
+                "memes",
+                []
+            )
+
 
             if isinstance(memes, list):
 
                 all_memes.extend(memes)
 
                 print(
-                    f"  r/{subreddit}: "
-                    f"{len(memes)} memes received"
+                    f"r/{subreddit}: "
+                    f"{len(memes)} posts received"
                 )
+
 
         except urllib.error.HTTPError as error:
 
             print(
-                f"  r/{subreddit}: HTTP error "
+                f"r/{subreddit}: HTTP error "
                 f"{error.code}",
                 file=sys.stderr
             )
 
+
         except urllib.error.URLError as error:
 
             print(
-                f"  r/{subreddit}: connection error "
+                f"r/{subreddit}: connection error "
                 f"{error}",
                 file=sys.stderr
             )
 
+
         except json.JSONDecodeError:
 
             print(
-                f"  r/{subreddit}: invalid API response",
+                f"r/{subreddit}: invalid API response",
                 file=sys.stderr
             )
+
 
         except Exception as error:
 
             print(
-                f"  r/{subreddit}: {error}",
+                f"r/{subreddit}: {error}",
                 file=sys.stderr
             )
 
-    # IMPORTANT:
-    # Return the memes to the caller.
+
     return all_memes
 
 
 # ============================================================
-# CHOOSE A NEW MEME
+# PICK NEW IMAGE
 # ============================================================
 
 def pick_new_meme(history):
     """
-    Choose a random meme that has not already been posted.
+    Pick a random image that hasn't been posted before.
+
+    No upvote filtering.
+    No NSFW filtering.
+    No title filtering.
+    No subreddit filtering.
+
+    The only selection requirement is that the post
+    contains a URL and hasn't already been posted.
     """
 
     seen = set(history)
 
-    for attempt in range(1, FETCH_ATTEMPTS + 1):
+
+    for attempt in range(
+        1,
+        FETCH_ATTEMPTS + 1
+    ):
 
         print(
-            f"\nFetching memes "
-            f"(attempt {attempt}/{FETCH_ATTEMPTS})..."
+            f"\nFetch attempt "
+            f"{attempt}/{FETCH_ATTEMPTS}"
         )
 
-        try:
-            candidates = fetch_candidate_memes()
 
-        except Exception as error:
+        candidates = fetch_candidate_memes()
 
-            print(
-                f"Fetch failed: {error}",
-                file=sys.stderr
-            )
-
-            time.sleep(2)
-            continue
 
         if not candidates:
 
             print(
-                "No memes were returned."
+                "No posts were returned."
             )
 
             time.sleep(2)
+
             continue
 
-        # Randomize the order.
+
+        # Completely randomize the results.
         random.shuffle(candidates)
 
-        # Find an unseen meme.
+
         for meme in candidates:
 
-            image_url = meme.get("url")
+            image_url = meme.get(
+                "url"
+            )
 
+
+            # No URL = cannot send it.
             if not image_url:
                 continue
 
+
+            # Skip previously posted images.
             if image_url in seen:
                 continue
 
+
             return meme
 
+
         print(
-            "All fetched memes have already been posted."
+            "All returned images were already posted."
         )
+
 
     return None
 
 
 # ============================================================
-# TELEGRAM
+# SEND TO TELEGRAM
 # ============================================================
 
 def send_to_telegram(meme):
     """
-    Send the selected meme to Telegram.
+    Send ONLY the image to Telegram.
+
+    No caption is sent.
     """
 
     if not BOT_TOKEN:
@@ -316,6 +397,7 @@ def send_to_telegram(meme):
 
         return False
 
+
     if not CHAT_ID:
 
         print(
@@ -325,63 +407,53 @@ def send_to_telegram(meme):
 
         return False
 
-    image_url = meme.get("url")
+
+    image_url = meme.get(
+        "url"
+    )
+
 
     if not image_url:
 
         print(
-            "ERROR: Meme has no image URL.",
+            "ERROR: Image URL is missing.",
             file=sys.stderr
         )
 
         return False
 
+
     telegram_url = (
-        f"https://api.telegram.org/"
+        "https://api.telegram.org/"
         f"bot{BOT_TOKEN}/sendPhoto"
     )
 
-    # --------------------------------------------------------
-    # Caption
-    # --------------------------------------------------------
 
-    title = meme.get("title", "")
-    subreddit = meme.get("subreddit", "")
-
-    caption_parts = []
-
-    if title:
-        caption_parts.append(title)
-
-    if subreddit:
-        caption_parts.append(
-            f"r/{subreddit}"
-        )
-
-    caption = "\n\n".join(caption_parts)
-
-    # Telegram captions have a character limit.
-    if len(caption) > 1000:
-        caption = caption[:997] + "..."
+    # ========================================================
+    # IMPORTANT:
+    #
+    # ONLY chat_id and photo are sent.
+    #
+    # There is NO caption.
+    # ========================================================
 
     payload = {
         "chat_id": CHAT_ID,
         "photo": image_url,
     }
 
-    # Only add caption if there is one.
-    if caption:
-        payload["caption"] = caption
 
     data = urllib.parse.urlencode(
         payload
     ).encode("utf-8")
+
 
     request = urllib.request.Request(
         telegram_url,
         data=data,
         method="POST"
     )
+
 
     try:
 
@@ -394,36 +466,37 @@ def send_to_telegram(meme):
                 response.read().decode("utf-8")
             )
 
+
         if not result.get("ok"):
 
             print(
-                "Telegram API returned an error:",
+                "Telegram API error:",
                 result,
                 file=sys.stderr
             )
 
             return False
 
+
         print()
         print("========================================")
-        print("        MEME POSTED SUCCESSFULLY")
+        print("       IMAGE POSTED SUCCESSFULLY")
         print("========================================")
         print(
-            f"Title: {meme.get('title', 'Unknown')}"
-        )
-        print(
             f"Subreddit: "
-            f"r/{meme.get('subreddit', 'Unknown')}"
+            f"r/{meme.get('subreddit', 'unknown')}"
         )
         print(
-            f"Upvotes: {meme.get('ups', 0)}"
+            f"Image URL: {image_url}"
         )
         print(
-            f"Image: {image_url}"
+            "Caption: NONE"
         )
         print("========================================")
 
+
         return True
+
 
     except urllib.error.HTTPError as error:
 
@@ -432,12 +505,16 @@ def send_to_telegram(meme):
             errors="ignore"
         )
 
+
         print(
-            f"Telegram HTTP error {error.code}: {body}",
+            f"Telegram HTTP error "
+            f"{error.code}: {body}",
             file=sys.stderr
         )
 
+
         return False
+
 
     except urllib.error.URLError as error:
 
@@ -446,7 +523,9 @@ def send_to_telegram(meme):
             file=sys.stderr
         )
 
+
         return False
+
 
     except Exception as error:
 
@@ -454,6 +533,7 @@ def send_to_telegram(meme):
             f"Unexpected Telegram error: {error}",
             file=sys.stderr
         )
+
 
         return False
 
@@ -466,78 +546,124 @@ def main():
 
     print()
     print("========================================")
-    print("          TELEGRAM MEME BOT")
+    print("        TELEGRAM IMAGE BOT")
+    print("        RUNNING EVERY 5 MINUTES")
     print("========================================")
 
-    # Check configuration.
+
+    # --------------------------------------------------------
+    # Check credentials
+    # --------------------------------------------------------
+
     if not BOT_TOKEN:
+
         print(
             "ERROR: TELEGRAM_BOT_TOKEN is missing.",
             file=sys.stderr
         )
+
         sys.exit(1)
 
+
     if not CHAT_ID:
+
         print(
             "ERROR: TELEGRAM_CHAT_ID is missing.",
             file=sys.stderr
         )
+
         sys.exit(1)
 
+
+    # --------------------------------------------------------
+    # Check subreddit configuration
+    # --------------------------------------------------------
+
     if not SUBREDDITS:
+
         print(
             "ERROR: No subreddits configured.",
             file=sys.stderr
         )
+
         sys.exit(1)
 
-    # Load duplicate history.
+
+    # --------------------------------------------------------
+    # Load history
+    # --------------------------------------------------------
+
     history = load_history()
+
 
     print(
         f"Previously posted: {len(history)}"
     )
 
-    # Find a new meme.
+
+    # --------------------------------------------------------
+    # Find image
+    # --------------------------------------------------------
+
     meme = pick_new_meme(history)
+
 
     if not meme:
 
         print()
         print(
-            "Could not find a new meme."
-        )
-        print(
-            "The API may be unavailable, or "
-            "the fetched memes may already be in posted.json."
+            "Could not find a new image."
         )
 
         return
 
-    # Send it.
-    success = send_to_telegram(meme)
+
+    # --------------------------------------------------------
+    # Send image
+    # --------------------------------------------------------
+
+    success = send_to_telegram(
+        meme
+    )
+
 
     if not success:
 
         print(
-            "\nMeme was NOT posted."
+            "\nImage was NOT posted."
         )
 
-        # Don't save failed posts to history.
         return
 
-    # Save successful post to history.
-    image_url = meme.get("url")
 
-    if image_url:
-        history.append(image_url)
-        save_history(history)
+    # --------------------------------------------------------
+    # Save successful post
+    # --------------------------------------------------------
 
-    print(
-        "\nHistory saved successfully."
+    image_url = meme.get(
+        "url"
     )
 
-    print("Bot finished.")
+
+    if image_url:
+
+        history.append(
+            image_url
+        )
+
+        save_history(
+            history
+        )
+
+
+    print()
+    print(
+        "History saved."
+    )
+
+    print(
+        "Finished successfully."
+    )
 
 
 # ============================================================
