@@ -17,6 +17,10 @@ import urllib.parse
 
 SUBREDDITS = [
     "nsfwanimegifs",
+    "ecchi",
+    "OverOppai",
+    "CFNM_Hentai",
+    "EcchiCurves"
 ]
 
 
