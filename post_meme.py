@@ -18,8 +18,11 @@ import tempfile
 # ============================================================
 
 SUBREDDITS = [
+    "nsfwanimegifs",
     "ecchi",
+    "OverOppai",
     "CFNM_Hentai",
+    "EcchiCurves"
 ]
 
 
