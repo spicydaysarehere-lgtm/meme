@@ -19,7 +19,7 @@ from PIL import Image
 # ============================================================
 
 SUBREDDITS = [
-      "nsfwanimegifs",
+       "nsfwanimegifs",
     "ecchi",
     "OverOppai",
     "CFNM_Hentai",
