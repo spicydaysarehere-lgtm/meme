@@ -25,35 +25,30 @@ jobs:
           fetch-depth: 0
           ref: main
 
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
 
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
 
-
-      - name: Verify FFmpeg
+      - name: Verify installation
         run: |
+          python --version
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
 
-
-      - name: Run Reddit Telegram bot
+      - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
         run: |
           python -u post_meme.py
 
-
-      - name: Save posting history
+      - name: Save history
         if: success()
         run: |
 
