@@ -18,10 +18,12 @@ import urllib.request
 # ============================================================
 
 SUBREDDITS = [
-    "gifs",
-    "animegifs",
-    "wholesomegifs",
-    "aww",
+    "nsfwanimegifs",
+    "ecchi",
+    "OverOppai",
+    "CFNM_Hentai", 
+    "EcchiCurves", 
+    "animeplot"
 ]
 
 POSTS_PER_SUBREDDIT = 50
