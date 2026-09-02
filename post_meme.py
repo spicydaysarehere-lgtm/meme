@@ -17,7 +17,6 @@ import tempfile
 # SUBREDDITS
 # ============================================================
 
-# Keep this list to SFW subreddits.
 SUBREDDITS = [
     "nsfwanimegifs",
     "ecchi",
@@ -246,7 +245,6 @@ def get_json(
                 f"{error.reason}"
             )
 
-            # Retry common temporary gateway errors.
             if error.code in (
                 429,
                 500,
@@ -406,7 +404,6 @@ def fetch_from_meme_api(
         f"r/{subreddit}"
     )
 
-    # Normalize "nsfw" spelling used by Meme API.
     for post in posts:
 
         if isinstance(post, dict):
@@ -808,7 +805,7 @@ def detect_media_type(
 
         return "gif"
 
-    # MP4 / MOV
+    # MP4 / MOV / WEBM
     if (
         len(data) >= 12
         and data[4:8] == b"ftyp"
@@ -928,10 +925,8 @@ def convert_to_animation_mp4(
             "-i",
             source,
 
-            # No audio for Telegram animation.
             "-an",
 
-            # Keep dimensions reasonable.
             "-vf",
             (
                 "scale="
@@ -1244,12 +1239,6 @@ def find_new_media(
         )
 
         for post in posts:
-
-            if not is_sfw_post(
-                post
-            ):
-
-                continue
 
             url = post.get(
                 "url"
@@ -1712,7 +1701,7 @@ def main():
     )
 
     print(
-        "SFW PHOTO + GIF + ANIMATION"
+        "PHOTO + GIF + ANIMATION"
     )
 
     print(
