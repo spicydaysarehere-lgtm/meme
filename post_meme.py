@@ -17,13 +17,12 @@ import tempfile
 # SUBREDDITS
 # ============================================================
 
+# Use general/SFW subreddits here.
 SUBREDDITS = [
-    "nsfwanimegifs",
-    "ecchi",
-    "OverOppai",
-    "CFNM_Hentai",
-    "EcchiCurves",
-    "animeplot",
+    "gifs",
+    "animegifs",
+    "wholesomegifs",
+    "aww",
 ]
 
 
@@ -31,34 +30,28 @@ SUBREDDITS = [
 # SETTINGS
 # ============================================================
 
-# How many posts to request from each subreddit.
 MEMES_PER_SUBREDDIT = 50
-
-# Maximum number of times the bot retries its search.
 FETCH_ATTEMPTS = 5
-
-# Number of entries kept in posted.json.
 HISTORY_LIMIT = 5000
 
-# Maximum source media size.
 MAX_MEDIA_SIZE = 50 * 1024 * 1024
 
-# Stay safely under Telegram's image upload limit.
+# Safe target below Telegram's photo upload limit.
 TELEGRAM_IMAGE_LIMIT = 9 * 1024 * 1024
 
-# Stay safely under Telegram's animation upload limit.
+# Safe target below Telegram's animation upload limit.
 TELEGRAM_GIF_LIMIT = 47 * 1024 * 1024
 
-# GIF conversion.
+# GIF conversion settings.
 GIF_FPS = 15
 GIF_MAX_WIDTH = 640
 
-# 0 = keep complete animation.
+# 0 = keep full animation duration.
 GIF_MAX_DURATION = 0
 
 
 # ============================================================
-# API SOURCES
+# API
 # ============================================================
 
 MEME_API_URL = (
@@ -70,7 +63,7 @@ REDDIT_JSON_URL = (
 )
 
 USER_AGENT = (
-    "RedditTelegramMediaBot/8.0 "
+    "RedditTelegramMediaBot/10.0 "
     "(GitHub Actions)"
 )
 
@@ -101,24 +94,21 @@ HISTORY_FILE = os.path.join(
 
 
 def empty_history():
-
     return {
         "urls": [],
         "ids": [],
         "hashes": [],
 
-        # 0 = image 1
-        # 1 = image 2
-        # 2 = GIF
+        # 0 = image
+        # 1 = image
+        # 2 = gif
         "sequence_index": 0,
     }
 
 
 def load_history():
 
-    if not os.path.exists(
-        HISTORY_FILE
-    ):
+    if not os.path.exists(HISTORY_FILE):
         return empty_history()
 
     try:
@@ -129,26 +119,18 @@ def load_history():
             encoding="utf-8"
         ) as file:
 
-            data = json.load(
-                file
-            )
+            data = json.load(file)
 
-        if isinstance(
-            data,
-            dict
-        ):
+        if isinstance(data, dict):
 
             try:
-
                 sequence_index = int(
                     data.get(
                         "sequence_index",
                         0
                     )
                 )
-
             except Exception:
-
                 sequence_index = 0
 
             return {
@@ -156,26 +138,19 @@ def load_history():
                     "urls",
                     []
                 ),
-
                 "ids": data.get(
                     "ids",
                     []
                 ),
-
                 "hashes": data.get(
                     "hashes",
                     []
                 ),
-
                 "sequence_index":
                     sequence_index % 3,
             }
 
-        # Compatibility with old list format.
-        if isinstance(
-            data,
-            list
-        ):
+        if isinstance(data, list):
 
             return {
                 "urls": data,
@@ -187,17 +162,14 @@ def load_history():
     except Exception as error:
 
         print(
-            f"Could not load posted.json: "
-            f"{error}",
+            f"Could not load posted.json: {error}",
             file=sys.stderr
         )
 
     return empty_history()
 
 
-def save_history(
-    history
-):
+def save_history(history):
 
     history["urls"] = (
         history.get(
@@ -220,18 +192,21 @@ def save_history(
         )[-HISTORY_LIMIT:]
     )
 
-    history["sequence_index"] = (
-        int(
+    try:
+        sequence_index = int(
             history.get(
                 "sequence_index",
                 0
             )
-        ) % 3
+        )
+    except Exception:
+        sequence_index = 0
+
+    history["sequence_index"] = (
+        sequence_index % 3
     )
 
-    temp_file = (
-        HISTORY_FILE + ".tmp"
-    )
+    temp_file = HISTORY_FILE + ".tmp"
 
     with open(
         temp_file,
@@ -252,7 +227,7 @@ def save_history(
 
 
 # ============================================================
-# JSON REQUEST
+# HTTP JSON
 # ============================================================
 
 def get_json(
@@ -270,7 +245,7 @@ def get_json(
         try:
 
             print(
-                f"HTTP "
+                f"HTTP request "
                 f"{attempt}/{attempts}: "
                 f"{url}"
             )
@@ -323,7 +298,7 @@ def get_json(
                 )
 
                 print(
-                    f"Temporary error: "
+                    f"Temporary server error: "
                     f"{last_error}"
                 )
 
@@ -347,8 +322,7 @@ def get_json(
         except urllib.error.URLError as error:
 
             last_error = (
-                f"Connection error: "
-                f"{error}"
+                f"Connection error: {error}"
             )
 
             print(
@@ -370,8 +344,7 @@ def get_json(
         except json.JSONDecodeError as error:
 
             print(
-                f"Invalid JSON: "
-                f"{error}",
+                f"Invalid JSON: {error}",
                 file=sys.stderr
             )
 
@@ -384,8 +357,7 @@ def get_json(
             )
 
             print(
-                f"Request error: "
-                f"{error}",
+                f"Request error: {error}",
                 file=sys.stderr
             )
 
@@ -399,7 +371,7 @@ def get_json(
                 )
 
     print(
-        f"All attempts failed: "
+        f"All HTTP attempts failed: "
         f"{last_error}",
         file=sys.stderr
     )
@@ -445,23 +417,21 @@ def fetch_from_meme_api(
 
     for post in posts:
 
-        if isinstance(
+        if not isinstance(
             post,
             dict
         ):
+            continue
 
-            post["_source"] = (
-                "meme-api"
+        post["_source"] = "meme-api"
+
+        if not post.get(
+            "subreddit"
+        ):
+
+            post["subreddit"] = (
+                subreddit
             )
-
-            # Make sure subreddit exists.
-            if not post.get(
-                "subreddit"
-            ):
-
-                post["subreddit"] = (
-                    subreddit
-                )
 
     print(
         f"Meme API: "
@@ -473,7 +443,7 @@ def fetch_from_meme_api(
 
 
 # ============================================================
-# REDDIT JSON FALLBACK
+# REDDIT FALLBACK
 # ============================================================
 
 def normalize_reddit_post(
@@ -542,33 +512,21 @@ def normalize_reddit_post(
 
     return {
         "postLink": post_link,
-
         "subreddit": data.get(
             "subreddit",
             ""
         ),
-
         "title": data.get(
             "title",
             ""
         ),
-
         "url": url,
-
-        "nsfw": bool(
+        "over_18": bool(
             data.get(
                 "over_18",
                 False
             )
         ),
-
-        "spoiler": bool(
-            data.get(
-                "spoiler",
-                False
-            )
-        ),
-
         "_source": "reddit-json",
     }
 
@@ -587,7 +545,6 @@ def fetch_from_reddit(
                 MEMES_PER_SUBREDDIT,
                 100
             ),
-
             "raw_json": 1,
         }
     )
@@ -628,7 +585,6 @@ def fetch_from_reddit(
         )
 
         if post:
-
             posts.append(
                 post
             )
@@ -651,21 +607,14 @@ def fetch_candidate_posts():
     if not SUBREDDITS:
 
         print(
-            "ERROR: No subreddits configured.",
+            "ERROR: SUBREDDITS is empty.",
             file=sys.stderr
         )
 
         return []
 
-    # IMPORTANT:
-    #
-    # We check ALL configured subreddits.
-    #
-    # This allows the bot to say:
-    #
-    # "This subreddit doesn't contain the
-    # required format, try another one."
-    #
+    # Randomize subreddit order so that one
+    # subreddit isn't always preferred.
     subreddit_order = list(
         SUBREDDITS
     )
@@ -691,23 +640,17 @@ def fetch_candidate_posts():
 
         print()
         print(
-            f"Checking "
-            f"r/{subreddit}..."
+            f"Checking r/{subreddit}..."
         )
 
         posts = fetch_from_meme_api(
             subreddit
         )
 
-        # ----------------------------------------------------
-        # Fallback
-        # ----------------------------------------------------
-
         if not posts:
 
             print(
-                f"Meme API failed for "
-                f"r/{subreddit}."
+                "Meme API unavailable."
             )
 
             print(
@@ -727,7 +670,7 @@ def fetch_candidate_posts():
         else:
 
             print(
-                f"No usable posts found "
+                f"No posts available "
                 f"from r/{subreddit}."
             )
 
@@ -744,7 +687,7 @@ def download_media(
 
     print()
     print(
-        "Downloading:"
+        "Downloading media:"
     )
 
     print(
@@ -783,8 +726,8 @@ def download_media(
         ):
 
             print(
-                "Skipped: source is larger "
-                "than 50 MB."
+                "Skipped: file exceeds "
+                "50 MB."
             )
 
             return None, ""
@@ -821,7 +764,7 @@ def download_media(
 
 
 # ============================================================
-# MEDIA TYPE
+# DETECT MEDIA TYPE
 # ============================================================
 
 def detect_media_type(
@@ -843,7 +786,7 @@ def detect_media_type(
     ).lower()
 
     # --------------------------------------------------------
-    # REAL GIF
+    # GIF
     # --------------------------------------------------------
 
     if data.startswith(
@@ -858,8 +801,9 @@ def detect_media_type(
 
         return "gif"
 
-    if "image/gif" in (
-        content_type
+    if (
+        "image/gif"
+        in content_type
     ):
 
         return "gif"
@@ -972,7 +916,7 @@ def save_temp_file(
 
 
 # ============================================================
-# COMPRESS PHOTO
+# PHOTO COMPRESSION
 # ============================================================
 
 def compress_photo(
@@ -983,8 +927,6 @@ def compress_photo(
         TELEGRAM_IMAGE_LIMIT
     ):
 
-        # IMPORTANT:
-        # This remains an image.
         return data
 
     print()
@@ -993,7 +935,7 @@ def compress_photo(
     )
 
     print(
-        "Compressing image..."
+        "Compressing with FFmpeg..."
     )
 
     source = save_temp_file(
@@ -1060,14 +1002,18 @@ def compress_photo(
             )
 
             print(
-                f"Image "
-                f"{width}px / q{quality}: "
+                f"Photo attempt "
+                f"{width}px/q{quality}: "
                 f"{size_mb:.2f} MB"
             )
 
             if len(output) <= (
                 TELEGRAM_IMAGE_LIMIT
             ):
+
+                print(
+                    "Image compression successful."
+                )
 
                 return output
 
@@ -1084,7 +1030,7 @@ def compress_photo(
 
 
 # ============================================================
-# GIF CONVERSION
+# CONVERT ANIMATION TO REAL GIF
 # ============================================================
 
 def convert_to_real_gif(
@@ -1093,7 +1039,7 @@ def convert_to_real_gif(
 
     print()
     print(
-        "Preparing REAL GIF..."
+        "Converting animation to REAL GIF..."
     )
 
     source = save_temp_file(
@@ -1123,7 +1069,7 @@ def convert_to_real_gif(
             ]
 
         # ----------------------------------------------------
-        # GENERATE PALETTE
+        # PALETTE
         # ----------------------------------------------------
 
         palette_command = [
@@ -1150,7 +1096,7 @@ def convert_to_real_gif(
             palette
         ]
 
-        palette_result = subprocess.run(
+        result = subprocess.run(
             palette_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1158,18 +1104,18 @@ def convert_to_real_gif(
         )
 
         if (
-            palette_result.returncode != 0
+            result.returncode != 0
             or not os.path.exists(
                 palette
             )
         ):
 
             print(
-                "Failed to generate GIF palette."
+                "GIF palette generation failed."
             )
 
             print(
-                palette_result.stderr.decode(
+                result.stderr.decode(
                     "utf-8",
                     errors="ignore"
                 )[-3000:],
@@ -1179,7 +1125,7 @@ def convert_to_real_gif(
             return None
 
         # ----------------------------------------------------
-        # CREATE ACTUAL GIF
+        # GIF
         # ----------------------------------------------------
 
         gif_command = [
@@ -1203,8 +1149,8 @@ def convert_to_real_gif(
                 f"fps={GIF_FPS},"
                 f"scale={GIF_MAX_WIDTH}:-1:"
                 "force_original_aspect_ratio=decrease"
-                "[video];"
-                "[video][1:v]"
+                "[v];"
+                "[v][1:v]"
                 "paletteuse="
                 "dither=sierra2_4a"
             ),
@@ -1215,7 +1161,7 @@ def convert_to_real_gif(
             output
         ]
 
-        gif_result = subprocess.run(
+        result = subprocess.run(
             gif_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1223,7 +1169,7 @@ def convert_to_real_gif(
         )
 
         if (
-            gif_result.returncode != 0
+            result.returncode != 0
             or not os.path.exists(
                 output
             )
@@ -1234,7 +1180,7 @@ def convert_to_real_gif(
             )
 
             print(
-                gif_result.stderr.decode(
+                result.stderr.decode(
                     "utf-8",
                     errors="ignore"
                 )[-3000:],
@@ -1251,18 +1197,20 @@ def convert_to_real_gif(
             gif_data = file.read()
 
         # ----------------------------------------------------
-        # VERIFY IT REALLY IS A GIF
+        # Verify actual GIF signature.
         # ----------------------------------------------------
 
-        if not gif_data.startswith(
-            b"GIF87a"
-        ) and not gif_data.startswith(
-            b"GIF89a"
+        if not (
+            gif_data.startswith(
+                b"GIF87a"
+            )
+            or gif_data.startswith(
+                b"GIF89a"
+            )
         ):
 
             print(
-                "ERROR: Generated file is "
-                "not a real GIF."
+                "Generated file is not a valid GIF."
             )
 
             return None
@@ -1284,16 +1232,8 @@ def convert_to_real_gif(
 
             return gif_data
 
-        # ----------------------------------------------------
-        # STRONGER COMPRESSION
-        # ----------------------------------------------------
-
         print(
             "GIF is too large."
-        )
-
-        print(
-            "Trying smaller GIF..."
         )
 
         return compress_large_gif(
@@ -1329,7 +1269,6 @@ def convert_to_real_gif(
                     )
 
             except Exception:
-
                 pass
 
 
@@ -1367,8 +1306,7 @@ def compress_large_gif(
 
             try:
 
-                # Palette.
-                result = subprocess.run(
+                palette_result = subprocess.run(
                     [
                         "ffmpeg",
                         "-hide_banner",
@@ -1384,7 +1322,7 @@ def compress_large_gif(
                             f"fps={fps},"
                             f"scale={width}:-1:"
                             "force_original_aspect_ratio=decrease,"
-                            "palettegen="
+                            "palettegen"
                         ),
 
                         palette
@@ -1395,7 +1333,7 @@ def compress_large_gif(
                 )
 
                 if (
-                    result.returncode != 0
+                    palette_result.returncode != 0
                     or not os.path.exists(
                         palette
                     )
@@ -1403,8 +1341,7 @@ def compress_large_gif(
 
                     continue
 
-                # GIF.
-                result = subprocess.run(
+                gif_result = subprocess.run(
                     [
                         "ffmpeg",
                         "-hide_banner",
@@ -1424,8 +1361,8 @@ def compress_large_gif(
                             f"fps={fps},"
                             f"scale={width}:-1:"
                             "force_original_aspect_ratio=decrease"
-                            "[video];"
-                            "[video][1:v]"
+                            "[v];"
+                            "[v][1:v]"
                             "paletteuse="
                             "dither=bayer:bayer_scale=2"
                         ),
@@ -1441,7 +1378,7 @@ def compress_large_gif(
                 )
 
                 if (
-                    result.returncode != 0
+                    gif_result.returncode != 0
                     or not os.path.exists(
                         output
                     )
@@ -1474,8 +1411,8 @@ def compress_large_gif(
                 )
 
                 print(
-                    f"GIF compression "
-                    f"{width}px / {fps}fps: "
+                    f"GIF attempt "
+                    f"{width}px/{fps}fps: "
                     f"{size_mb:.2f} MB"
                 )
 
@@ -1503,7 +1440,6 @@ def compress_large_gif(
                             )
 
                     except Exception:
-
                         pass
 
         return None
@@ -1532,7 +1468,7 @@ def media_hash(
 
 
 # ============================================================
-# REQUIRED TYPE
+# REQUIRED SEQUENCE TYPE
 # ============================================================
 
 def required_media_type(
@@ -1545,13 +1481,10 @@ def required_media_type(
     )
 
     try:
-
         index = int(
             index
         )
-
     except Exception:
-
         index = 0
 
     index %= 3
@@ -1575,7 +1508,7 @@ def sequence_text(
 
 
 # ============================================================
-# FIND REQUIRED MEDIA
+# FIND NEW MEDIA
 # ============================================================
 
 def find_new_media(
@@ -1613,7 +1546,7 @@ def find_new_media(
     )
 
     print(
-        "CURRENT SEQUENCE"
+        "POST SEQUENCE"
     )
 
     print(
@@ -1621,7 +1554,7 @@ def find_new_media(
     )
 
     print(
-        f"Next required: "
+        f"CURRENT SLOT: "
         f"{sequence_text(wanted)}"
     )
 
@@ -1629,38 +1562,20 @@ def find_new_media(
         "========================================"
     )
 
-    # --------------------------------------------------------
-    # Fetch all configured subreddits.
-    # Then inspect each post until the required format
-    # is found.
-    # --------------------------------------------------------
-
-    for batch in range(
+    for round_number in range(
         1,
         FETCH_ATTEMPTS + 1
     ):
 
         print()
         print(
-            "========================================"
-        )
-
-        print(
             f"SEARCH ROUND "
-            f"{batch}/{FETCH_ATTEMPTS}"
-        )
-
-        print(
-            "========================================"
+            f"{round_number}/{FETCH_ATTEMPTS}"
         )
 
         posts = fetch_candidate_posts()
 
         if not posts:
-
-            print(
-                "No posts returned."
-            )
 
             time.sleep(3)
 
@@ -1687,24 +1602,23 @@ def find_new_media(
             )
 
             if not url:
-
                 continue
 
             # ------------------------------------------------
-            # URL DUPLICATE
+            # DUPLICATE URL
             # ------------------------------------------------
 
             if url in seen_urls:
 
                 print(
-                    f"Skip r/{subreddit}: "
+                    f"r/{subreddit}: "
                     f"duplicate URL."
                 )
 
                 continue
 
             # ------------------------------------------------
-            # REDDIT POST DUPLICATE
+            # DUPLICATE REDDIT POST
             # ------------------------------------------------
 
             if (
@@ -1713,8 +1627,8 @@ def find_new_media(
             ):
 
                 print(
-                    f"Skip r/{subreddit}: "
-                    f"duplicate post."
+                    f"r/{subreddit}: "
+                    f"duplicate Reddit post."
                 )
 
                 continue
@@ -1734,10 +1648,10 @@ def find_new_media(
                 continue
 
             # ------------------------------------------------
-            # DETECT ORIGINAL TYPE
+            # DETECT
             # ------------------------------------------------
 
-            original_type = detect_media_type(
+            source_type = detect_media_type(
                 url,
                 media_data,
                 content_type
@@ -1745,20 +1659,15 @@ def find_new_media(
 
             print(
                 f"r/{subreddit}: "
-                f"source type = "
-                f"{original_type}"
+                f"source = {source_type}"
             )
 
-            if original_type == "unknown":
-
-                print(
-                    "Skipped: unknown media."
-                )
+            if source_type == "unknown":
 
                 continue
 
             # ------------------------------------------------
-            # HASH ORIGINAL
+            # HASH
             # ------------------------------------------------
 
             digest = media_hash(
@@ -1768,7 +1677,7 @@ def find_new_media(
             if digest in seen_hashes:
 
                 print(
-                    "Skipped: exact duplicate."
+                    "Exact duplicate."
                 )
 
                 continue
@@ -1779,18 +1688,14 @@ def find_new_media(
 
             if wanted == "photo":
 
-                # IMPORTANT:
-                # We ONLY accept an actual image.
-                #
-                # GIF -> NOT converted to image.
-                # Video -> NOT converted to image.
-
-                if original_type != "photo":
+                # NEVER convert a GIF or video
+                # into an image.
+                if source_type != "photo":
 
                     print(
                         f"r/{subreddit}: "
                         f"not an image. "
-                        f"Need IMAGE."
+                        f"Trying another post/subreddit."
                     )
 
                     continue
@@ -1807,8 +1712,7 @@ def find_new_media(
                 if prepared is None:
 
                     print(
-                        "Image could not be "
-                        "prepared."
+                        "Could not prepare image."
                     )
 
                     continue
@@ -1821,64 +1725,45 @@ def find_new_media(
 
             else:
 
-                # IMPORTANT:
-                # A normal image can NEVER be
-                # converted just to fill the GIF slot.
-
-                if original_type == "photo":
+                # NEVER convert a normal image
+                # into a GIF.
+                if source_type == "photo":
 
                     print(
                         f"r/{subreddit}: "
-                        f"normal IMAGE. "
+                        f"normal image. "
                         f"Need GIF."
                     )
 
                     continue
 
-                if original_type not in (
-                    "gif",
-                    "video"
-                ):
+                # ------------------------------------------------
+                # REAL GIF
+                # ------------------------------------------------
+
+                if source_type == "gif":
 
                     print(
                         f"r/{subreddit}: "
-                        f"unsupported GIF source."
+                        f"REAL GIF FOUND."
                     )
 
-                    continue
-
-                print(
-                    f"r/{subreddit}: "
-                    f"animation source found."
-                )
+                    prepared = media_data
 
                 # ------------------------------------------------
-                # Literal GIF
+                # VIDEO SOURCE
                 # ------------------------------------------------
 
-                if original_type == "gif":
+                elif source_type == "video":
 
-                    prepared = (
-                        media_data
+                    print(
+                        f"r/{subreddit}: "
+                        f"animated video found."
                     )
 
                     print(
-                        "Keeping original GIF."
-                    )
-
-                # ------------------------------------------------
-                # MP4/WebM representing an animated post
-                # ------------------------------------------------
-
-                else:
-
-                    print(
-                        "Source is video."
-                    )
-
-                    print(
-                        "Converting it to "
-                        "REAL GIF format."
+                        "Converting video "
+                        "to REAL GIF."
                     )
 
                     prepared = (
@@ -1890,14 +1775,17 @@ def find_new_media(
                     if prepared is None:
 
                         print(
-                            "Could not create "
-                            "a real GIF."
+                            "GIF conversion failed."
                         )
 
                         continue
 
+                else:
+
+                    continue
+
                 # ------------------------------------------------
-                # VERIFY FINAL GIF
+                # FINAL GIF VALIDATION
                 # ------------------------------------------------
 
                 if not (
@@ -1910,8 +1798,8 @@ def find_new_media(
                 ):
 
                     print(
-                        "ERROR: Final file is "
-                        "not a real GIF."
+                        "ERROR: final file isn't "
+                        "a real GIF."
                     )
 
                     continue
@@ -1919,7 +1807,7 @@ def find_new_media(
                 telegram_type = "gif"
 
             # =================================================
-            # ACCEPT
+            # SELECTED
             # =================================================
 
             post["_media_data"] = (
@@ -1934,8 +1822,8 @@ def find_new_media(
                 digest
             )
 
-            post["_original_type"] = (
-                original_type
+            post["_source_type"] = (
+                source_type
             )
 
             print()
@@ -1953,12 +1841,12 @@ def find_new_media(
             )
 
             print(
-                f"Original: "
-                f"{original_type}"
+                f"Original format: "
+                f"{source_type}"
             )
 
             print(
-                f"Telegram: "
+                f"Telegram format: "
                 f"{telegram_type}"
             )
 
@@ -1968,17 +1856,16 @@ def find_new_media(
 
             return post
 
-        print()
         print(
             f"No {sequence_text(wanted)} "
-            f"found in this search round."
+            f"found in this round."
         )
 
     return None
 
 
 # ============================================================
-# MULTIPART
+# MULTIPART HELPERS
 # ============================================================
 
 def multipart_field(
@@ -1993,7 +1880,9 @@ def multipart_field(
         f'name="{name}"\r\n'
         f"\r\n"
         f"{value}\r\n"
-    ).encode()
+    ).encode(
+        "utf-8"
+    )
 
 
 def multipart_file(
@@ -2011,7 +1900,9 @@ def multipart_file(
         f'filename="{filename}"\r\n"
         f"Content-Type: {content_type}\r\n"
         f"\r\n"
-    ).encode()
+    ).encode(
+        "utf-8"
+    )
 
     return (
         header
@@ -2065,7 +1956,9 @@ def telegram_upload(
     )
 
     body.extend(
-        f"--{boundary}--\r\n".encode()
+        f"--{boundary}--\r\n".encode(
+            "utf-8"
+        )
     )
 
     request = urllib.request.Request(
@@ -2074,7 +1967,7 @@ def telegram_upload(
         method="POST",
         headers={
             "Content-Type":
-                "multipart/form-data; "
+                f"multipart/form-data; "
                 f"boundary={boundary}"
         }
     )
@@ -2110,7 +2003,7 @@ def send_to_telegram(
     if not data:
 
         print(
-            "ERROR: Media data missing.",
+            "ERROR: No media data.",
             file=sys.stderr
         )
 
@@ -2147,7 +2040,7 @@ def send_to_telegram(
         if media_type == "photo":
 
             print(
-                "Sending as PHOTO."
+                "Sending as PHOTO..."
             )
 
             result = telegram_upload(
@@ -2159,14 +2052,13 @@ def send_to_telegram(
             )
 
         # ----------------------------------------------------
-        # REAL GIF
+        # GIF
         # ----------------------------------------------------
 
         elif media_type == "gif":
 
             print(
-                "Sending as REAL GIF "
-                "using sendAnimation."
+                "Sending as REAL GIF..."
             )
 
             result = telegram_upload(
@@ -2180,7 +2072,7 @@ def send_to_telegram(
         else:
 
             print(
-                "Unknown Telegram media type.",
+                "Unknown Telegram type.",
                 file=sys.stderr
             )
 
@@ -2211,19 +2103,6 @@ def send_to_telegram(
 
         print(
             "POSTED SUCCESSFULLY"
-        )
-
-        print(
-            "========================================"
-        )
-
-        print(
-            f"Type: {media_type}"
-        )
-
-        print(
-            f"Subreddit: "
-            f"r/{post.get('subreddit', '')}"
         )
 
         print(
@@ -2310,7 +2189,7 @@ def main():
     )
 
     print(
-        "NO CROSS-FORMAT CONVERSION"
+        "NO IMAGE/GIF CROSS-CONVERSION"
     )
 
     print(
@@ -2318,14 +2197,13 @@ def main():
     )
 
     # --------------------------------------------------------
-    # CHECK TELEGRAM
+    # ENVIRONMENT
     # --------------------------------------------------------
 
     if not BOT_TOKEN:
 
         print(
-            "ERROR: TELEGRAM_BOT_TOKEN "
-            "is missing.",
+            "ERROR: TELEGRAM_BOT_TOKEN is missing.",
             file=sys.stderr
         )
 
@@ -2334,8 +2212,7 @@ def main():
     if not CHAT_ID:
 
         print(
-            "ERROR: TELEGRAM_CHAT_ID "
-            "is missing.",
+            "ERROR: TELEGRAM_CHAT_ID is missing.",
             file=sys.stderr
         )
 
@@ -2367,7 +2244,7 @@ def main():
     )
 
     print(
-        f"IDs: "
+        f"Reddit IDs: "
         f"{len(history['ids'])}"
     )
 
@@ -2401,7 +2278,7 @@ def main():
         )
 
         print(
-            "The sequence was NOT advanced."
+            "Sequence was NOT advanced."
         )
 
         print(
@@ -2422,7 +2299,7 @@ def main():
 
         print()
         print(
-            "Posting failed."
+            "POST FAILED"
         )
 
         print(
@@ -2436,7 +2313,7 @@ def main():
         return
 
     # --------------------------------------------------------
-    # SAVE HISTORY
+    # HISTORY
     # --------------------------------------------------------
 
     url = post.get(
@@ -2492,7 +2369,7 @@ def main():
     )
 
     print(
-        "Sequence advanced."
+        "========================================"
     )
 
     print(
@@ -2502,10 +2379,6 @@ def main():
 
     print(
         "posted.json updated."
-    )
-
-    print(
-        "========================================"
     )
 
 
