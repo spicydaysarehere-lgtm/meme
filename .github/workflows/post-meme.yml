@@ -1,4 +1,4 @@
-name: Reddit to Telegram Meme Bot
+name: Reddit to Telegram Media Bot
 
 on:
   schedule:
@@ -10,17 +10,14 @@ permissions:
   contents: write
 
 jobs:
-  post-meme:
+
+  post:
 
     runs-on: ubuntu-latest
 
-    timeout-minutes: 25
+    timeout-minutes: 30
 
     steps:
-
-      # ======================================================
-      # CHECKOUT
-      # ======================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -29,19 +26,11 @@ jobs:
           ref: main
 
 
-      # ======================================================
-      # PYTHON
-      # ======================================================
-
-      - name: Set up Python
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-
-      # ======================================================
-      # FFMPEG
-      # ======================================================
 
       - name: Install FFmpeg
         run: |
@@ -49,22 +38,13 @@ jobs:
           sudo apt-get install -y ffmpeg
 
 
-      # ======================================================
-      # VERIFY
-      # ======================================================
-
-      - name: Verify installation
+      - name: Verify FFmpeg
         run: |
-          python --version
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
 
 
-      # ======================================================
-      # RUN BOT
-      # ======================================================
-
-      - name: Post a meme
+      - name: Run Reddit Telegram bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
@@ -73,11 +53,7 @@ jobs:
           python -u post_meme.py
 
 
-      # ======================================================
-      # SAVE HISTORY
-      # ======================================================
-
-      - name: Commit updated history file
+      - name: Save posting history
         if: success()
         run: |
 
