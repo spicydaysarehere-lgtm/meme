@@ -19,9 +19,11 @@ import tempfile
 
 # Use SFW subreddits here.
 SUBREDDITS = [
-    "gifs",
-    "aww",
-    "wholesome",
+    "nsfwanimegifs",
+    "ecchi",
+    "OverOppai",
+    "CFNM_Hentai",
+    "EcchiCurves",
 ]
 
 
