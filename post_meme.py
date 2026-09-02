@@ -9,6 +9,9 @@ import hashlib
 import urllib.request
 import urllib.error
 import urllib.parse
+import io
+
+from PIL import Image
 
 
 # ============================================================
@@ -16,7 +19,7 @@ import urllib.parse
 # ============================================================
 
 SUBREDDITS = [
-    "nsfwanimegifs",
+      "nsfwanimegifs",
     "ecchi",
     "OverOppai",
     "CFNM_Hentai",
@@ -36,9 +39,12 @@ HISTORY_LIMIT = 5000
 
 FETCH_ATTEMPTS = 8
 
-# Maximum media size:
-# 50 MB
+# Reddit download limit
 MAX_MEDIA_SIZE = 50 * 1024 * 1024
+
+# Telegram photo limit safety target.
+# Keep comfortably below 10 MB.
+TELEGRAM_IMAGE_LIMIT = 9 * 1024 * 1024
 
 MEME_API_URL = (
     "https://meme-api.com/gimme/{subreddit}/{count}"
@@ -59,7 +65,7 @@ CHAT_ID = os.environ.get(
 
 
 # ============================================================
-# HISTORY FILE
+# HISTORY
 # ============================================================
 
 HISTORY_FILE = os.path.join(
@@ -69,10 +75,6 @@ HISTORY_FILE = os.path.join(
     "posted.json"
 )
 
-
-# ============================================================
-# HISTORY
-# ============================================================
 
 def empty_history():
     return {
@@ -97,7 +99,6 @@ def load_history():
 
             data = json.load(file)
 
-        # New format
         if isinstance(data, dict):
 
             return {
@@ -115,7 +116,6 @@ def load_history():
                 )
             }
 
-        # Old format
         if isinstance(data, list):
 
             return {
@@ -183,7 +183,7 @@ def download_media(media_url):
 
         print()
         print(
-            f"Downloading media:"
+            "Downloading media:"
         )
         print(
             media_url
@@ -193,7 +193,7 @@ def download_media(media_url):
             media_url,
             headers={
                 "User-Agent":
-                    "TelegramRedditMediaBot/2.0"
+                    "TelegramRedditMediaBot/3.0"
             }
         )
 
@@ -253,7 +253,7 @@ def download_media(media_url):
             if not data:
 
                 print(
-                    "Skipped: downloaded file is empty."
+                    "Skipped: empty download."
                 )
 
                 return None, ""
@@ -324,121 +324,70 @@ def detect_media_type(
     # GIF
     # --------------------------------------------------------
 
-    if data.startswith(
-        b"GIF87a"
-    ):
-
+    if data.startswith(b"GIF87a"):
         return "gif"
 
-    if data.startswith(
-        b"GIF89a"
-    ):
-
+    if data.startswith(b"GIF89a"):
         return "gif"
 
     if "image/gif" in content_type:
-
         return "gif"
 
-    if clean_url.endswith(
-        ".gif"
-    ):
-
+    if clean_url.endswith(".gif"):
         return "gif"
 
     # --------------------------------------------------------
-    # MP4 / MOV / M4V
+    # MP4 / MOV / WEBM
     # --------------------------------------------------------
 
-    # MP4/MOV normally contains "ftyp"
-    # at bytes 4-8.
     if (
         len(data) >= 12
         and data[4:8] == b"ftyp"
     ):
-
         return "video"
 
-    if content_type.startswith(
-        "video/"
-    ):
-
+    if content_type.startswith("video/"):
         return "video"
 
-    if clean_url.endswith(
-        ".mp4"
-    ):
-
+    if clean_url.endswith(".mp4"):
         return "video"
 
-    if clean_url.endswith(
-        ".m4v"
-    ):
-
+    if clean_url.endswith(".m4v"):
         return "video"
 
-    if clean_url.endswith(
-        ".mov"
-    ):
-
+    if clean_url.endswith(".mov"):
         return "video"
 
-    if clean_url.endswith(
-        ".webm"
-    ):
-
+    if clean_url.endswith(".webm"):
         return "video"
 
     # --------------------------------------------------------
     # JPEG
     # --------------------------------------------------------
 
-    if data.startswith(
-        b"\xff\xd8\xff"
-    ):
-
+    if data.startswith(b"\xff\xd8\xff"):
         return "jpg"
 
-    if (
-        "image/jpeg"
-        in content_type
-    ):
-
+    if "image/jpeg" in content_type:
         return "jpg"
 
-    if clean_url.endswith(
-        ".jpg"
-    ):
-
+    if clean_url.endswith(".jpg"):
         return "jpg"
 
-    if clean_url.endswith(
-        ".jpeg"
-    ):
-
+    if clean_url.endswith(".jpeg"):
         return "jpg"
 
     # --------------------------------------------------------
     # PNG
     # --------------------------------------------------------
 
-    if data.startswith(
-        b"\x89PNG"
-    ):
-
+    if data.startswith(b"\x89PNG"):
         return "png"
 
-    if (
-        "image/png"
-        in content_type
-    ):
-
+    if "image/png" in content_type:
         return "png"
 
-    if clean_url.endswith(
-        ".png"
-    ):
-
+    if clean_url.endswith(".png"):
         return "png"
 
     # --------------------------------------------------------
@@ -450,27 +399,321 @@ def detect_media_type(
         and data[:4] == b"RIFF"
         and data[8:12] == b"WEBP"
     ):
-
         return "webp"
 
-    if (
-        "image/webp"
-        in content_type
-    ):
-
+    if "image/webp" in content_type:
         return "webp"
 
-    if clean_url.endswith(
-        ".webp"
-    ):
-
+    if clean_url.endswith(".webp"):
         return "webp"
-
-    # --------------------------------------------------------
-    # Unknown
-    # --------------------------------------------------------
 
     return "unknown"
+
+
+# ============================================================
+# IMAGE COMPRESSION
+# ============================================================
+
+def compress_image_for_telegram(
+    image_data,
+    media_type
+):
+    """
+    Telegram photos must stay below the upload limit.
+
+    Large PNG/WebP/JPEG files are automatically converted
+    to JPEG and compressed until they are safely below
+    the limit.
+
+    GIFs are NOT passed through this function.
+    """
+
+    original_size = len(
+        image_data
+    )
+
+    print()
+    print(
+        "Preparing image for Telegram..."
+    )
+
+    print(
+        f"Original size: "
+        f"{original_size / 1024 / 1024:.2f} MB"
+    )
+
+    # --------------------------------------------------------
+    # Already small enough
+    # --------------------------------------------------------
+
+    if (
+        original_size
+        <= TELEGRAM_IMAGE_LIMIT
+        and media_type in (
+            "jpg",
+            "png"
+        )
+    ):
+
+        print(
+            "Image is already small enough."
+        )
+
+        return (
+            image_data,
+            media_type
+        )
+
+    # --------------------------------------------------------
+    # Open image
+    # --------------------------------------------------------
+
+    try:
+
+        image = Image.open(
+            io.BytesIO(
+                image_data
+            )
+        )
+
+        print(
+            f"Image size: "
+            f"{image.width}x{image.height}"
+        )
+
+        # ----------------------------------------------------
+        # Convert transparency safely
+        # ----------------------------------------------------
+
+        if image.mode in (
+            "RGBA",
+            "LA",
+            "P"
+        ):
+
+            background = Image.new(
+                "RGB",
+                image.size,
+                "white"
+            )
+
+            if image.mode == "P":
+
+                image = image.convert(
+                    "RGBA"
+                )
+
+            if image.mode in (
+                "RGBA",
+                "LA"
+            ):
+
+                background.paste(
+                    image,
+                    mask=image.getchannel(
+                        "A"
+                    )
+                )
+
+                image = background
+
+            else:
+
+                image = image.convert(
+                    "RGB"
+                )
+
+        else:
+
+            image = image.convert(
+                "RGB"
+            )
+
+        # ----------------------------------------------------
+        # Start with original dimensions
+        # ----------------------------------------------------
+
+        working = image
+
+        # ----------------------------------------------------
+        # Try several JPEG qualities
+        # ----------------------------------------------------
+
+        qualities = [
+            90,
+            85,
+            80,
+            75,
+            70,
+            65,
+            60,
+            55,
+            50,
+            45,
+            40,
+        ]
+
+        for quality in qualities:
+
+            output = io.BytesIO()
+
+            working.save(
+                output,
+                format="JPEG",
+                quality=quality,
+                optimize=True
+            )
+
+            compressed = (
+                output.getvalue()
+            )
+
+            size_mb = (
+                len(compressed)
+                / 1024
+                / 1024
+            )
+
+            print(
+                f"JPEG quality {quality}: "
+                f"{size_mb:.2f} MB"
+            )
+
+            if (
+                len(compressed)
+                <= TELEGRAM_IMAGE_LIMIT
+            ):
+
+                print(
+                    "Image compressed successfully."
+                )
+
+                print(
+                    f"Final size: "
+                    f"{size_mb:.2f} MB"
+                )
+
+                return (
+                    compressed,
+                    "jpg"
+                )
+
+        # ----------------------------------------------------
+        # Still too large:
+        # resize gradually
+        # ----------------------------------------------------
+
+        print(
+            "Image is still too large."
+        )
+
+        print(
+            "Reducing dimensions..."
+        )
+
+        width = working.width
+        height = working.height
+
+        for scale in (
+            0.85,
+            0.70,
+            0.55,
+            0.45,
+            0.35
+        ):
+
+            new_width = max(
+                320,
+                int(
+                    width * scale
+                )
+            )
+
+            new_height = max(
+                320,
+                int(
+                    height * scale
+                )
+            )
+
+            resized = working.resize(
+                (
+                    new_width,
+                    new_height
+                ),
+                Image.Resampling.LANCZOS
+            )
+
+            for quality in (
+                75,
+                65,
+                55,
+                45
+            ):
+
+                output = io.BytesIO()
+
+                resized.save(
+                    output,
+                    format="JPEG",
+                    quality=quality,
+                    optimize=True
+                )
+
+                compressed = (
+                    output.getvalue()
+                )
+
+                size_mb = (
+                    len(compressed)
+                    / 1024
+                    / 1024
+                )
+
+                print(
+                    f"Resize {new_width}x"
+                    f"{new_height}, "
+                    f"quality {quality}: "
+                    f"{size_mb:.2f} MB"
+                )
+
+                if (
+                    len(compressed)
+                    <= TELEGRAM_IMAGE_LIMIT
+                ):
+
+                    print(
+                        "Image resized and "
+                        "compressed successfully."
+                    )
+
+                    print(
+                        f"Final size: "
+                        f"{size_mb:.2f} MB"
+                    )
+
+                    return (
+                        compressed,
+                        "jpg"
+                    )
+
+        print(
+            "Could not compress image "
+            "enough for Telegram.",
+            file=sys.stderr
+        )
+
+        return None, ""
+
+    except Exception as error:
+
+        print(
+            f"Image compression failed: "
+            f"{error}",
+            file=sys.stderr
+        )
+
+        return None, ""
 
 
 # ============================================================
@@ -537,7 +780,7 @@ def fetch_candidate_posts():
             url,
             headers={
                 "User-Agent":
-                    "TelegramRedditMediaBot/2.0"
+                    "TelegramRedditMediaBot/3.0"
             }
         )
 
@@ -647,10 +890,12 @@ def find_new_media(history):
         print(
             "========================================"
         )
+
         print(
             f"SEARCH BATCH "
             f"{attempt}/{FETCH_ATTEMPTS}"
         )
+
         print(
             "========================================"
         )
@@ -683,7 +928,6 @@ def find_new_media(history):
             )
 
             if not url:
-
                 continue
 
             # ------------------------------------------------
@@ -699,7 +943,7 @@ def find_new_media(history):
                 continue
 
             # ------------------------------------------------
-            # Reddit post duplicate
+            # Reddit duplicate
             # ------------------------------------------------
 
             if (
@@ -732,7 +976,7 @@ def find_new_media(history):
                 continue
 
             # ------------------------------------------------
-            # DETECT
+            # DETECT TYPE
             # ------------------------------------------------
 
             media_type = detect_media_type(
@@ -756,7 +1000,7 @@ def find_new_media(history):
                 continue
 
             # ------------------------------------------------
-            # HASH
+            # HASH ORIGINAL MEDIA
             # ------------------------------------------------
 
             digest = media_hash(
@@ -780,19 +1024,64 @@ def find_new_media(history):
             print(
                 "========================================"
             )
+
             print(
                 "NEW MEDIA FOUND!"
             )
+
             print(
                 f"Type: {media_type}"
             )
+
             print(
                 f"Subreddit: "
                 f"r/{post.get('subreddit', 'unknown')}"
             )
+
             print(
                 "========================================"
             )
+
+            # ------------------------------------------------
+            # COMPRESS LARGE IMAGES
+            # ------------------------------------------------
+
+            if media_type in (
+                "jpg",
+                "png",
+                "webp"
+            ):
+
+                compressed_data, compressed_type = (
+                    compress_image_for_telegram(
+                        media_data,
+                        media_type
+                    )
+                )
+
+                if (
+                    compressed_data is None
+                    or not compressed_type
+                ):
+
+                    print(
+                        "Skipped: image could not "
+                        "be prepared for Telegram."
+                    )
+
+                    continue
+
+                media_data = (
+                    compressed_data
+                )
+
+                media_type = (
+                    compressed_type
+                )
+
+            # ------------------------------------------------
+            # STORE
+            # ------------------------------------------------
 
             post["_media_data"] = (
                 media_data
@@ -1134,12 +1423,20 @@ def send_to_telegram(post):
     print(
         "========================================"
     )
+
     print(
         "UPLOADING TO TELEGRAM"
     )
+
     print(
         f"Media type: {media_type}"
     )
+
+    print(
+        f"Upload size: "
+        f"{len(media_data) / 1024 / 1024:.2f} MB"
+    )
+
     print(
         "========================================"
     )
@@ -1175,12 +1472,12 @@ def send_to_telegram(post):
             )
 
         # ----------------------------------------------------
-        # PNG/JPG
+        # IMAGE
         # ----------------------------------------------------
 
-        elif (
-            media_type == "jpg"
-            or media_type == "png"
+        elif media_type in (
+            "jpg",
+            "png"
         ):
 
             print(
@@ -1191,22 +1488,6 @@ def send_to_telegram(post):
                 media_data,
                 media_type
             )
-
-        # ----------------------------------------------------
-        # WEBP
-        # ----------------------------------------------------
-
-        elif media_type == "webp":
-
-            print(
-                "WEBP is not sent as a photo."
-            )
-
-            print(
-                "Skipping unsupported WEBP."
-            )
-
-            return False
 
         else:
 
@@ -1241,28 +1522,36 @@ def send_to_telegram(post):
         print(
             "========================================"
         )
+
         print(
             "       POSTED SUCCESSFULLY"
         )
+
         print(
             "========================================"
         )
+
         print(
             f"Type: {media_type}"
         )
+
         print(
             f"Subreddit: "
             f"r/{post.get('subreddit', 'unknown')}"
         )
+
         print(
             f"URL: {post.get('url')}"
         )
+
         print(
             "Caption: NONE"
         )
+
         print(
             "Duplicate hash: SAVED"
         )
+
         print(
             "========================================"
         )
@@ -1318,21 +1607,25 @@ def main():
     print(
         "========================================"
     )
+
     print(
         "       REDDIT → TELEGRAM BOT"
     )
+
     print(
         "       IMAGE + GIF + VIDEO"
     )
+
     print(
         "       INTERVAL: ~30 MINUTES"
     )
+
     print(
         "========================================"
     )
 
     # --------------------------------------------------------
-    # CHECK TELEGRAM TOKEN
+    # CHECK TOKEN
     # --------------------------------------------------------
 
     if not BOT_TOKEN:
@@ -1346,7 +1639,7 @@ def main():
         sys.exit(1)
 
     # --------------------------------------------------------
-    # CHECK CHAT ID
+    # CHECK CHAT
     # --------------------------------------------------------
 
     if not CHAT_ID:
@@ -1373,7 +1666,7 @@ def main():
         sys.exit(1)
 
     # --------------------------------------------------------
-    # LOAD HISTORY
+    # HISTORY
     # --------------------------------------------------------
 
     history = load_history()
@@ -1399,7 +1692,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # FIND MEDIA
+    # FIND
     # --------------------------------------------------------
 
     post = find_new_media(
@@ -1412,9 +1705,11 @@ def main():
         print(
             "========================================"
         )
+
         print(
             "NO NEW MEDIA FOUND"
         )
+
         print(
             "========================================"
         )
@@ -1422,7 +1717,7 @@ def main():
         return
 
     # --------------------------------------------------------
-    # POST TO TELEGRAM
+    # SEND
     # --------------------------------------------------------
 
     success = send_to_telegram(
@@ -1443,7 +1738,7 @@ def main():
         return
 
     # --------------------------------------------------------
-    # SAVE HISTORY
+    # SAVE HISTORY ONLY AFTER SUCCESS
     # --------------------------------------------------------
 
     url = post.get(
