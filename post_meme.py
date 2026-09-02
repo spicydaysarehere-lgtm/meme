@@ -16,7 +16,7 @@ import urllib.parse
 # ============================================================
 
 SUBREDDITS = [
-    "NSFW_GIF",
+    "nsfwanimegifs",
 ]
 
 
