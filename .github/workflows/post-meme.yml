@@ -1,38 +1,114 @@
-name: Post Meme to Telegram
+name: Reddit to Telegram Meme Bot
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+
+  workflow_dispatch:
 
 permissions:
   contents: write
 
-on:
-  schedule:
-    # Runs every 10 minutes. GitHub's scheduler is best-effort and can
-    # occasionally be delayed a few minutes during high load, but it's free
-    # and needs no server of your own.
-    - cron: "*/10 * * * *"
-  workflow_dispatch: {}  # lets you manually trigger a run from the Actions tab
-
 jobs:
   post-meme:
+
     runs-on: ubuntu-latest
+
+    timeout-minutes: 25
+
     steps:
-      - name: Check out repo
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
+
+      - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+
+      # ======================================================
+      # PYTHON
+      # ======================================================
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+
+      # ======================================================
+      # FFMPEG
+      # ======================================================
+
+      - name: Install FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+
+      # ======================================================
+      # VERIFY
+      # ======================================================
+
+      - name: Verify installation
+        run: |
+          python --version
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+
+
+      # ======================================================
+      # RUN BOT
+      # ======================================================
+
       - name: Post a meme
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python post_meme.py
+
+        run: |
+          python -u post_meme.py
+
+
+      # ======================================================
+      # SAVE HISTORY
+      # ======================================================
 
       - name: Commit updated history file
+        if: success()
         run: |
-          git config --global user.name "meme-bot"
-          git config --global user.email "meme-bot@users.noreply.github.com"
-          git add posted.json || true
-          git diff --cached --quiet || git commit -m "Update posted meme history [skip ci]"
-          git push || true
+
+          git config user.name "github-actions[bot]"
+
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add posted.json
+
+          if git diff --cached --quiet; then
+            echo "No history changes."
+            exit 0
+          fi
+
+          git commit -m "Update posting history"
+
+          git fetch origin main
+
+          git rebase origin/main || true
+
+          if git ls-files -u | grep -q .; then
+
+            echo "Resolving posted.json conflict..."
+
+            git checkout --theirs posted.json
+
+            git add posted.json
+
+            GIT_EDITOR=true git rebase --continue || true
+
+          fi
+
+          git push origin HEAD:main
