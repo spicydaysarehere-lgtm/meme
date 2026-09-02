@@ -26,10 +26,7 @@ import urllib.parse
 # ]
 
 SUBREDDITS = [
-    "ecchi",
-    "OverOppai",
-    "CFNM_Hentai",
-    "EcchiCurves"
+ "HENTAI_GIF"
 ]
 
 
