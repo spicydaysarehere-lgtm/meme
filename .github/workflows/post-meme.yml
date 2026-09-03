@@ -17,6 +17,14 @@ permissions:
 
 
 
+concurrency:
+
+  group: reddit-media-post
+
+  cancel-in-progress: false
+
+
+
 jobs:
 
 
@@ -117,8 +125,22 @@ jobs:
 
 
 
-          git pull origin main --rebase
+          git fetch origin main
 
 
 
-          git push origin main
+          git checkout main
+
+
+
+          git merge origin/main --no-edit || true
+
+
+
+          git push origin main || (
+
+            git pull origin main --no-edit
+
+            git push origin main
+
+          )
