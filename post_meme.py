@@ -17,6 +17,8 @@ import tempfile
 # SUBREDDITS
 # ============================================================
 
+# USE SFW SUBREDDITS ONLY.
+# Replace these with the SFW subreddits you want.
 SUBREDDITS = [
     "nsfwanimegifs",
     "ecchi",
@@ -31,42 +33,59 @@ SUBREDDITS = [
 # SETTINGS
 # ============================================================
 
-# Number of different subreddits checked in one search.
-SUBREDDITS_PER_RUN = 2
+# Posting order:
+#
+# IMAGE
+# IMAGE
+# GIF / ANIMATION
+# IMAGE
+# IMAGE
+# GIF / ANIMATION
+#
+IMAGE_TARGET = 2
 
-# Number of Reddit posts requested from each subreddit.
-MEMES_PER_SUBREDDIT = 50
+POSTS_PER_SUBREDDIT = 100
 
-# Number of times the bot searches before giving up.
-FETCH_ATTEMPTS = 8
+FETCH_ATTEMPTS = 6
 
-# History size.
+HTTP_ATTEMPTS = 4
+
 HISTORY_LIMIT = 5000
 
-# Maximum download size.
-MAX_MEDIA_SIZE = 50 * 1024 * 1024
 
-# Telegram photo limit target.
+# ------------------------------------------------------------
+# SIZE LIMITS
+# ------------------------------------------------------------
+
+MAX_MEDIA_SIZE = 49 * 1024 * 1024
+
 TELEGRAM_IMAGE_LIMIT = 9 * 1024 * 1024
 
-# Telegram animation limit.
 TELEGRAM_ANIMATION_LIMIT = 49 * 1024 * 1024
 
-# Telegram animation dimensions.
-MAX_ANIMATION_WIDTH = 720
-MAX_ANIMATION_HEIGHT = 720
+
+# ------------------------------------------------------------
+# USER AGENT
+# ------------------------------------------------------------
+
+USER_AGENT = (
+    "RedditTelegramMediaBot/10.0 "
+    "(GitHub Actions)"
+)
+
+
+# ------------------------------------------------------------
+# SOURCES
+# ------------------------------------------------------------
 
 MEME_API_URL = (
-    "https://meme-api.com/gimme/{subreddit}/{count}"
+    "https://meme-api.com/gimme/"
+    "{subreddit}/{count}"
 )
 
 REDDIT_JSON_URL = (
-    "https://www.reddit.com/r/{subreddit}/new.json"
-)
-
-USER_AGENT = (
-    "RedditTelegramMediaBot/8.0 "
-    "(GitHub Actions automation)"
+    "https://www.reddit.com/r/"
+    "{subreddit}/new.json"
 )
 
 
@@ -75,11 +94,35 @@ USER_AGENT = (
 # ============================================================
 
 BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN"
-)
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
 
 CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID"
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
+
+# ============================================================
+# FILE LOCATIONS
+# ============================================================
+
+BASE_DIR = os.path.dirname(
+    os.path.abspath(__file__)
+)
+
+
+HISTORY_FILE = os.path.join(
+    BASE_DIR,
+    "posted.json"
+)
+
+
+STATE_FILE = os.path.join(
+    BASE_DIR,
+    "posting_state.json"
 )
 
 
@@ -87,15 +130,8 @@ CHAT_ID = os.environ.get(
 # HISTORY
 # ============================================================
 
-HISTORY_FILE = os.path.join(
-    os.path.dirname(
-        os.path.abspath(__file__)
-    ),
-    "posted.json"
-)
-
-
 def empty_history():
+
     return {
         "urls": [],
         "ids": [],
@@ -105,7 +141,10 @@ def empty_history():
 
 def load_history():
 
-    if not os.path.exists(HISTORY_FILE):
+    if not os.path.exists(
+        HISTORY_FILE
+    ):
+
         return empty_history()
 
     try:
@@ -118,7 +157,10 @@ def load_history():
 
             data = json.load(file)
 
-        if isinstance(data, dict):
+        if isinstance(
+            data,
+            dict
+        ):
 
             return {
                 "urls": data.get(
@@ -135,7 +177,10 @@ def load_history():
                 )
             }
 
-        if isinstance(data, list):
+        if isinstance(
+            data,
+            list
+        ):
 
             return {
                 "urls": data,
@@ -146,32 +191,42 @@ def load_history():
     except Exception as error:
 
         print(
-            f"Could not load posted.json: {error}",
-            file=sys.stderr
+            f"Could not load history: {error}",
+            file=sys.stderr,
+            flush=True
         )
 
     return empty_history()
 
 
-def save_history(history):
+def save_history(
+    history
+):
 
     history["urls"] = (
-        history.get("urls", [])
-        [-HISTORY_LIMIT:]
+        history.get(
+            "urls",
+            []
+        )[-HISTORY_LIMIT:]
     )
 
     history["ids"] = (
-        history.get("ids", [])
-        [-HISTORY_LIMIT:]
+        history.get(
+            "ids",
+            []
+        )[-HISTORY_LIMIT:]
     )
 
     history["hashes"] = (
-        history.get("hashes", [])
-        [-HISTORY_LIMIT:]
+        history.get(
+            "hashes",
+            []
+        )[-HISTORY_LIMIT:]
     )
 
     temp_file = (
-        HISTORY_FILE + ".tmp"
+        HISTORY_FILE
+        + ".tmp"
     )
 
     with open(
@@ -193,12 +248,137 @@ def save_history(history):
 
 
 # ============================================================
+# POSTING STATE
+# ============================================================
+
+def load_state():
+
+    if not os.path.exists(
+        STATE_FILE
+    ):
+
+        return {
+            "images_since_animation": 0
+        }
+
+    try:
+
+        with open(
+            STATE_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
+            data = json.load(file)
+
+        value = int(
+            data.get(
+                "images_since_animation",
+                0
+            )
+        )
+
+        value = max(
+            0,
+            min(
+                value,
+                IMAGE_TARGET
+            )
+        )
+
+        return {
+            "images_since_animation": value
+        }
+
+    except Exception:
+
+        return {
+            "images_since_animation": 0
+        }
+
+
+def save_state(
+    state
+):
+
+    temp_file = (
+        STATE_FILE
+        + ".tmp"
+    )
+
+    with open(
+        temp_file,
+        "w",
+        encoding="utf-8"
+    ) as file:
+
+        json.dump(
+            state,
+            file,
+            indent=2
+        )
+
+    os.replace(
+        temp_file,
+        STATE_FILE
+    )
+
+
+def required_media_type(
+    state
+):
+
+    if (
+        state[
+            "images_since_animation"
+        ]
+        < IMAGE_TARGET
+    ):
+
+        return "image"
+
+    return "animation"
+
+
+def advance_state(
+    state,
+    media_type
+):
+
+    if media_type == "image":
+
+        state[
+            "images_since_animation"
+        ] += 1
+
+        if (
+            state[
+                "images_since_animation"
+            ]
+            > IMAGE_TARGET
+        ):
+
+            state[
+                "images_since_animation"
+            ] = IMAGE_TARGET
+
+    elif media_type in (
+        "gif",
+        "animation_mp4"
+    ):
+
+        state[
+            "images_since_animation"
+        ] = 0
+
+
+# ============================================================
 # HTTP JSON
 # ============================================================
 
 def get_json(
     url,
-    attempts=4
+    attempts=HTTP_ATTEMPTS
 ):
 
     last_error = None
@@ -212,8 +392,13 @@ def get_json(
 
             print(
                 f"HTTP request "
-                f"{attempt}/{attempts}: "
-                f"{url}"
+                f"{attempt}/{attempts}",
+                flush=True
+            )
+
+            print(
+                url,
+                flush=True
             )
 
             request = urllib.request.Request(
@@ -221,7 +406,9 @@ def get_json(
                 headers={
                     "User-Agent": USER_AGENT,
                     "Accept": "application/json",
-                    "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Language": (
+                        "en-US,en;q=0.9"
+                    )
                 }
             )
 
@@ -230,7 +417,9 @@ def get_json(
                 timeout=30
             ) as response:
 
-                status = response.getcode()
+                status = (
+                    response.getcode()
+                )
 
                 raw = response.read()
 
@@ -265,7 +454,9 @@ def get_json(
                 522,
                 523,
                 524,
-                530,
+                525,
+                526,
+                530
             ):
 
                 wait = min(
@@ -274,12 +465,14 @@ def get_json(
                 )
 
                 print(
-                    f"Temporary server error: "
-                    f"{last_error}"
+                    f"Temporary error: "
+                    f"{last_error}",
+                    flush=True
                 )
 
                 print(
-                    f"Waiting {wait} seconds..."
+                    f"Waiting {wait}s...",
+                    flush=True
                 )
 
                 time.sleep(
@@ -290,42 +483,8 @@ def get_json(
 
             print(
                 last_error,
-                file=sys.stderr
-            )
-
-            return None
-
-        except urllib.error.URLError as error:
-
-            last_error = (
-                f"Connection error: {error}"
-            )
-
-            print(
-                last_error,
-                file=sys.stderr
-            )
-
-            if attempt < attempts:
-
-                wait = min(
-                    2 ** attempt,
-                    15
-                )
-
-                print(
-                    f"Waiting {wait} seconds..."
-                )
-
-                time.sleep(
-                    wait
-                )
-
-        except json.JSONDecodeError as error:
-
-            print(
-                f"Invalid JSON: {error}",
-                file=sys.stderr
+                file=sys.stderr,
+                flush=True
             )
 
             return None
@@ -337,8 +496,10 @@ def get_json(
             )
 
             print(
-                f"Request error: {error}",
-                file=sys.stderr
+                f"Request error: "
+                f"{error}",
+                file=sys.stderr,
+                flush=True
             )
 
             if attempt < attempts:
@@ -348,6 +509,11 @@ def get_json(
                     15
                 )
 
+                print(
+                    f"Waiting {wait}s...",
+                    flush=True
+                )
+
                 time.sleep(
                     wait
                 )
@@ -355,7 +521,8 @@ def get_json(
     print(
         f"All HTTP attempts failed: "
         f"{last_error}",
-        file=sys.stderr
+        file=sys.stderr,
+        flush=True
     )
 
     return None
@@ -376,62 +543,113 @@ def fetch_from_meme_api(
     url = MEME_API_URL.format(
         subreddit=encoded,
         count=min(
-            MEMES_PER_SUBREDDIT,
+            POSTS_PER_SUBREDDIT,
             50
         )
     )
 
     data = get_json(
-        url,
-        attempts=4
+        url
     )
 
     if not data:
+
         return []
 
-    posts = data.get(
+    memes = data.get(
         "memes",
         []
     )
 
     if not isinstance(
-        posts,
+        memes,
         list
     ):
+
         return []
 
-    print(
-        f"Meme API returned "
-        f"{len(posts)} posts for "
-        f"r/{subreddit}"
-    )
+    posts = []
 
-    for post in posts:
+    for meme in memes:
 
-        if isinstance(
-            post,
+        if not isinstance(
+            meme,
             dict
         ):
 
-            post["_source"] = (
-                "meme-api"
-            )
+            continue
+
+        media_url = meme.get(
+            "url"
+        )
+
+        if not media_url:
+
+            continue
+
+        posts.append(
+            {
+                "id": str(
+                    meme.get(
+                        "postLink",
+                        ""
+                    )
+                ),
+                "postLink": str(
+                    meme.get(
+                        "postLink",
+                        ""
+                    )
+                ),
+                "subreddit": meme.get(
+                    "subreddit",
+                    subreddit
+                ),
+                "title": meme.get(
+                    "title",
+                    ""
+                ),
+                "url": media_url,
+                "nsfw": bool(
+                    meme.get(
+                        "nsfw",
+                        False
+                    )
+                ),
+                "spoiler": bool(
+                    meme.get(
+                        "spoiler",
+                        False
+                    )
+                ),
+                "_source": "meme-api"
+            }
+        )
+
+    print(
+        f"meme-api returned "
+        f"{len(posts)} posts for "
+        f"r/{subreddit}",
+        flush=True
+    )
 
     return posts
 
 
 # ============================================================
-# REDDIT JSON FALLBACK
+# REDDIT JSON
 # ============================================================
 
 def normalize_reddit_post(
-    child
+    child,
+    subreddit
 ):
 
     if not isinstance(
         child,
         dict
     ):
+
         return None
 
     data = child.get(
@@ -443,15 +661,19 @@ def normalize_reddit_post(
         data,
         dict
     ):
+
         return None
 
-    post_id = data.get(
-        "id",
-        ""
+    post_id = str(
+        data.get(
+            "id",
+            ""
+        )
     )
 
     permalink = data.get(
-        "permalink"
+        "permalink",
+        ""
     )
 
     if permalink:
@@ -465,7 +687,7 @@ def normalize_reddit_post(
 
         post_link = (
             "https://redd.it/"
-            + str(post_id)
+            + post_id
         )
 
     else:
@@ -483,48 +705,34 @@ def normalize_reddit_post(
     )
 
     if not url:
+
         return None
 
     return {
+        "id": post_id,
         "postLink": post_link,
-
         "subreddit": data.get(
             "subreddit",
-            ""
+            subreddit
         ),
-
         "title": data.get(
             "title",
             ""
         ),
-
         "url": url,
-
         "nsfw": bool(
             data.get(
                 "over_18",
                 False
             )
         ),
-
         "spoiler": bool(
             data.get(
                 "spoiler",
                 False
             )
         ),
-
-        "author": data.get(
-            "author",
-            ""
-        ),
-
-        "ups": data.get(
-            "ups",
-            0
-        ),
-
-        "_source": "reddit-json",
+        "_source": "reddit-json"
     }
 
 
@@ -539,10 +747,10 @@ def fetch_from_reddit(
     query = urllib.parse.urlencode(
         {
             "limit": min(
-                MEMES_PER_SUBREDDIT,
+                POSTS_PER_SUBREDDIT,
                 100
             ),
-            "raw_json": 1,
+            "raw_json": 1
         }
     )
 
@@ -556,16 +764,23 @@ def fetch_from_reddit(
 
     data = get_json(
         url,
-        attempts=4
+        attempts=3
     )
 
     if not data:
+
         return []
 
     children = (
         data
-        .get("data", {})
-        .get("children", [])
+        .get(
+            "data",
+            {}
+        )
+        .get(
+            "children",
+            []
+        )
     )
 
     posts = []
@@ -573,67 +788,66 @@ def fetch_from_reddit(
     for child in children:
 
         post = normalize_reddit_post(
-            child
+            child,
+            subreddit
         )
 
         if post:
+
             posts.append(
                 post
             )
 
     print(
-        f"Reddit fallback returned "
+        f"Reddit returned "
         f"{len(posts)} posts for "
-        f"r/{subreddit}"
+        f"r/{subreddit}",
+        flush=True
     )
 
     return posts
 
 
 # ============================================================
-# FETCH CANDIDATES
+# FETCH ALL SUBREDDITS
 # ============================================================
 
 def fetch_candidate_posts():
 
-    if not SUBREDDITS:
-
-        print(
-            "ERROR: SUBREDDITS is empty.",
-            file=sys.stderr
-        )
-
-        return []
-
-    amount = min(
-        SUBREDDITS_PER_RUN,
-        len(SUBREDDITS)
-    )
-
-    chosen = random.sample(
-        SUBREDDITS,
-        amount
-    )
-
     print()
     print(
-        "Checking subreddits:"
+        "========================================",
+        flush=True
     )
 
-    for subreddit in chosen:
+    print(
+        "CHECKING SUBREDDITS",
+        flush=True
+    )
 
-        print(
-            f"  r/{subreddit}"
-        )
+    print(
+        "========================================",
+        flush=True
+    )
 
     all_posts = []
 
-    for subreddit in chosen:
+    # Shuffle the subreddit order so the same
+    # subreddit isn't always selected first.
+    subreddits = list(
+        SUBREDDITS
+    )
+
+    random.shuffle(
+        subreddits
+    )
+
+    for subreddit in subreddits:
 
         print()
         print(
-            f"Getting posts from "
-            f"r/{subreddit}..."
+            f"Checking r/{subreddit}",
+            flush=True
         )
 
         posts = fetch_from_meme_api(
@@ -643,11 +857,14 @@ def fetch_candidate_posts():
         if not posts:
 
             print(
-                "Meme API unavailable."
+                f"meme-api failed for "
+                f"r/{subreddit}",
+                flush=True
             )
 
             print(
-                "Trying Reddit JSON fallback..."
+                "Trying Reddit JSON...",
+                flush=True
             )
 
             posts = fetch_from_reddit(
@@ -663,9 +880,14 @@ def fetch_candidate_posts():
         else:
 
             print(
-                f"Could not retrieve "
-                f"r/{subreddit}."
+                f"No posts received from "
+                f"r/{subreddit}",
+                flush=True
             )
+
+    random.shuffle(
+        all_posts
+    )
 
     return all_posts
 
@@ -680,10 +902,14 @@ def download_media(
 
     print()
     print(
-        "Downloading media:"
+        "Downloading media:",
+        flush=True
     )
 
-    print(url)
+    print(
+        url,
+        flush=True
+    )
 
     try:
 
@@ -691,7 +917,7 @@ def download_media(
             url,
             headers={
                 "User-Agent": USER_AGENT,
-                "Accept": "*/*",
+                "Accept": "*/*"
             }
         )
 
@@ -701,23 +927,31 @@ def download_media(
         ) as response:
 
             content_type = (
-                response.headers
+                response
+                .headers
                 .get(
                     "Content-Type",
                     ""
                 )
                 .lower()
+                .split(
+                    ";"
+                )[0]
+                .strip()
             )
 
             data = response.read(
                 MAX_MEDIA_SIZE + 1
             )
 
-        if len(data) > MAX_MEDIA_SIZE:
+        if len(data) > (
+            MAX_MEDIA_SIZE
+        ):
 
             print(
-                "Skipped: media exceeds "
-                "50 MB."
+                "Skipped: media is over "
+                "49 MB.",
+                flush=True
             )
 
             return None, ""
@@ -725,36 +959,43 @@ def download_media(
         if not data:
 
             print(
-                "Skipped: empty media."
+                "Skipped: empty media.",
+                flush=True
             )
 
             return None, ""
 
         print(
             f"Downloaded: "
-            f"{len(data) / 1024 / 1024:.2f} MB"
+            f"{len(data) / 1024 / 1024:.2f} MB",
+            flush=True
         )
 
         print(
             f"Content-Type: "
-            f"{content_type}"
+            f"{content_type}",
+            flush=True
         )
 
-        return data, content_type
+        return (
+            data,
+            content_type
+        )
 
     except Exception as error:
 
         print(
             f"Download failed: "
             f"{error}",
-            file=sys.stderr
+            file=sys.stderr,
+            flush=True
         )
 
         return None, ""
 
 
 # ============================================================
-# MEDIA DETECTION
+# MEDIA TYPE DETECTION
 # ============================================================
 
 def detect_media_type(
@@ -775,81 +1016,22 @@ def detect_media_type(
     ).lower()
 
     # --------------------------------------------------------
-    # TRUE GIF
-    # --------------------------------------------------------
-
-    if data.startswith(
-        b"GIF87a"
-    ):
-
-        return "gif"
-
-    if data.startswith(
-        b"GIF89a"
-    ):
-
-        return "gif"
-
-    if "image/gif" in content_type:
-
-        return "gif"
-
-    if clean_url.endswith(
-        ".gif"
-    ):
-
-        return "gif"
-
-    # --------------------------------------------------------
-    # MP4 / MOV / WEBM
+    # GIF
+    #
+    # Check the actual file bytes first.
+    # This is extremely important.
     # --------------------------------------------------------
 
     if (
-        len(data) >= 12
-        and data[4:8] == b"ftyp"
-    ):
-
-        return "animated_video"
-
-    if content_type.startswith(
-        "video/"
-    ):
-
-        return "animated_video"
-
-    if clean_url.endswith(
-        (
-            ".mp4",
-            ".m4v",
-            ".mov",
-            ".webm",
+        data.startswith(
+            b"GIF87a"
+        )
+        or data.startswith(
+            b"GIF89a"
         )
     ):
 
-        return "animated_video"
-
-    # --------------------------------------------------------
-    # WEBP
-    #
-    # Important:
-    # A Reddit animated WebP can look like an image based
-    # only on the extension/header.
-    #
-    # We use ffprobe to determine whether it has multiple
-    # frames.
-    # --------------------------------------------------------
-
-    if (
-        len(data) >= 12
-        and data[:4] == b"RIFF"
-        and data[8:12] == b"WEBP"
-    ):
-
-        if is_animated_webp(data):
-
-            return "animated_webp"
-
-        return "photo"
+        return "gif"
 
     # --------------------------------------------------------
     # JPEG
@@ -859,257 +1041,96 @@ def detect_media_type(
         b"\xff\xd8\xff"
     ):
 
-        return "photo"
+        return "image"
 
     # --------------------------------------------------------
     # PNG
     # --------------------------------------------------------
 
     if data.startswith(
-        b"\x89PNG"
+        b"\x89PNG\r\n\x1a\n"
     ):
 
-        return "photo"
+        return "image"
+
+    # --------------------------------------------------------
+    # WEBP
+    # --------------------------------------------------------
+
+    if (
+        len(data) >= 12
+        and data[:4] == b"RIFF"
+        and data[8:12] == b"WEBP"
+    ):
+
+        return "image"
+
+    # --------------------------------------------------------
+    # MP4 / MOV
+    # --------------------------------------------------------
+
+    if (
+        len(data) >= 12
+        and data[4:8] == b"ftyp"
+    ):
+
+        return "video"
 
     # --------------------------------------------------------
     # CONTENT TYPE
     # --------------------------------------------------------
 
+    if content_type == "image/gif":
+
+        return "gif"
+
     if content_type.startswith(
         "image/"
     ):
 
-        return "photo"
+        return "image"
+
+    if content_type.startswith(
+        "video/"
+    ):
+
+        return "video"
 
     # --------------------------------------------------------
-    # URL EXTENSION
+    # URL FALLBACK
     # --------------------------------------------------------
+
+    if clean_url.endswith(
+        ".gif"
+    ):
+
+        return "gif"
 
     if clean_url.endswith(
         (
             ".jpg",
             ".jpeg",
             ".png",
+            ".webp"
         )
     ):
 
-        return "photo"
+        return "image"
+
+    if clean_url.endswith(
+        (
+            ".mp4",
+            ".m4v",
+            ".mov",
+            ".webm"
+        )
+    ):
+
+        return "video"
 
     return "unknown"
 
 
 # ============================================================
-# FFPROBE
-# ============================================================
-
-def run_ffprobe(
-    path
-):
-
-    try:
-
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "stream=codec_name,codec_type,width,height,nb_frames",
-                "-of",
-                "json",
-                path,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30
-        )
-
-        if result.returncode != 0:
-            return None
-
-        return json.loads(
-            result.stdout.decode(
-                "utf-8",
-                errors="ignore"
-            )
-        )
-
-    except Exception:
-
-        return None
-
-
-def is_animated_webp(
-    data
-):
-
-    source = save_temp_file(
-        data,
-        ".webp"
-    )
-
-    try:
-
-        info = run_ffprobe(
-            source
-        )
-
-        if not info:
-            return False
-
-        streams = info.get(
-            "streams",
-            []
-        )
-
-        for stream in streams:
-
-            if stream.get(
-                "codec_type"
-            ) == "video":
-
-                frames = stream.get(
-                    "nb_frames"
-                )
-
-                if frames:
-
-                    try:
-
-                        return int(
-                            frames
-                        ) > 1
-
-                    except Exception:
-                        pass
-
-        # If ffprobe cannot provide nb_frames,
-        # ask ffprobe for packet count.
-
-        result = subprocess.run(
-            [
-                "ffprobe",
-                "-v",
-                "error",
-                "-select_streams",
-                "v:0",
-                "-count_packets",
-                "-show_entries",
-                "stream=nb_read_packets",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                source,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30
-        )
-
-        if result.returncode == 0:
-
-            text = (
-                result.stdout
-                .decode(
-                    "utf-8",
-                    errors="ignore"
-                )
-                .strip()
-            )
-
-            try:
-
-                return int(text) > 1
-
-            except Exception:
-                pass
-
-        return False
-
-    finally:
-
-        try:
-            os.remove(source)
-        except Exception:
-            pass
-
-
-# ============================================================
 # TEMP FILE
-# ============================================================
-
-def save_temp_file(
-    data,
-    suffix
-):
-
-    fd, path = tempfile.mkstemp(
-        suffix=suffix
-    )
-
-    os.close(fd)
-
-    with open(
-        path,
-        "wb"
-    ) as file:
-
-        file.write(data)
-
-    return path
-
-
-# ============================================================
-# VALIDATE GIF
-# ============================================================
-
-def validate_gif(
-    data
-):
-
-    source = save_temp_file(
-        data,
-        ".gif"
-    )
-
-    try:
-
-        info = run_ffprobe(
-            source
-        )
-
-        if not info:
-            return False
-
-        streams = info.get(
-            "streams",
-            []
-        )
-
-        for stream in streams:
-
-            if stream.get(
-                "codec_type"
-            ) == "video":
-
-                codec = (
-                    stream.get(
-                        "codec_name"
-                    )
-                    or ""
-                ).lower()
-
-                if codec == "gif":
-
-                    return True
-
-        return False
-
-    finally:
-
-        try:
-            os.remove(source)
-        except Exception:
-            pass
-
-
-# ======================================
+# ====================================================
