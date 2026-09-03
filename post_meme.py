@@ -32,10 +32,12 @@ TOKEN = os.environ.get(
     ""
 ).strip()
 
+
 CHAT_ID = os.environ.get(
     "TELEGRAM_CHAT_ID",
     ""
 ).strip()
+
 
 
 if not TOKEN or not CHAT_ID:
@@ -48,42 +50,66 @@ session = requests.Session()
 
 session.headers.update(
     {
-        "User-Agent":
-        "RedditMediaBot/2.0"
+        "User-Agent": "RedditMediaBot/3.0"
     }
 )
 
 
 
-# -------------------------
+# =========================
 # STATE
-# -------------------------
+# =========================
 
 def load_state():
 
-    if not STATE_FILE.exists():
+    default = {
+        "index": 0,
+        "hashes": []
+    }
 
-        return {
-            "index": 0,
-            "hashes": []
-        }
+
+    if not STATE_FILE.exists():
+        return default
 
 
     try:
 
-        return json.loads(
+        data = json.loads(
             STATE_FILE.read_text(
                 encoding="utf-8"
             )
         )
 
 
-    except:
+        hashes = data.get(
+            "hashes",
+            []
+        )
+
+
+        # Convert old format
+        if not hashes:
+
+            hashes = data.get(
+                "posted",
+                []
+            )
+
 
         return {
-            "index": 0,
-            "hashes": []
+            "index": int(
+                data.get(
+                    "index",
+                    0
+                )
+            ),
+            "hashes": hashes
         }
+
+
+    except:
+
+        return default
 
 
 
@@ -99,92 +125,100 @@ def save_state(state):
 
 
 
-# -------------------------
+# =========================
 # ROTATION
-# -------------------------
+# =========================
 
-def required_type(index):
+def needed_type(index):
 
-    pattern = [
+    order = [
         "image",
         "image",
         "gif"
     ]
 
-    return pattern[
+    return order[
         index % 3
     ]
 
 
 
-# -------------------------
-# FILE CHECK
-# -------------------------
+# =========================
+# HASH
+# =========================
 
-def file_hash(path):
+def get_hash(path):
 
-    h = hashlib.sha256()
+    sha = hashlib.sha256()
 
     with open(
         path,
         "rb"
     ) as f:
 
-        while True:
+        for block in iter(
+            lambda: f.read(8192),
+            b""
+        ):
 
-            chunk = f.read(8192)
-
-            if not chunk:
-                break
-
-            h.update(chunk)
+            sha.update(block)
 
 
-    return h.hexdigest()
+    return sha.hexdigest()
 
 
+
+# =========================
+# DETECT
+# =========================
 
 def detect(path):
 
-    data = path.read_bytes()[:32]
+    try:
+
+        head = path.read_bytes()[:32]
 
 
-    if data.startswith(
-        b"GIF"
-    ):
-        return "gif"
+        if head.startswith(
+            b"GIF"
+        ):
+            return "gif"
 
 
-    if (
-        data.startswith(b"\xff\xd8")
-        or data.startswith(b"\x89PNG")
-    ):
-        return "image"
+        if (
+            head.startswith(b"\xff\xd8")
+            or head.startswith(b"\x89PNG")
+        ):
+            return "image"
+
+
+    except:
+
+        pass
+
 
 
     ext = path.suffix.lower()
 
 
-    if ext in (
+    if ext in [
         ".jpg",
         ".jpeg",
         ".png",
         ".webp"
-    ):
+    ]:
         return "image"
 
 
-    if ext in (
-        ".gif",
-    ):
+    if ext == ".gif":
         return "gif"
 
 
-    if ext in (
+    if ext in [
         ".mp4",
         ".webm",
         ".mov"
-    ):
+    ]:
         return "video"
 
 
@@ -192,10 +226,9 @@ def detect(path):
 
 
 
-
-# -------------------------
+# =========================
 # DOWNLOAD
-# -------------------------
+# =========================
 
 def download(url,path):
 
@@ -225,10 +258,9 @@ def download(url,path):
 
 
 
-
-# -------------------------
-# VIDEO -> GIF
-# -------------------------
+# =========================
+# GIF CONVERSION
+# =========================
 
 def convert_gif(video):
 
@@ -258,7 +290,6 @@ def convert_gif(video):
 
 
     if result.returncode == 0:
-
         return output
 
 
@@ -266,10 +297,9 @@ def convert_gif(video):
 
 
 
-
-# -------------------------
+# =========================
 # FIND MEDIA
-# -------------------------
+# =========================
 
 def find_media(
     wanted,
@@ -284,7 +314,6 @@ def find_media(
 
 
     for sub in subs:
-
 
         try:
 
@@ -325,15 +354,15 @@ def find_media(
 
 
 
-            temp = tempfile.NamedTemporaryFile(
+            tmp = tempfile.NamedTemporaryFile(
                 delete=False
             )
 
-            temp.close()
+            tmp.close()
 
 
             path = Path(
-                temp.name
+                tmp.name
             )
 
 
@@ -351,12 +380,12 @@ def find_media(
 
 
 
-            media_hash = file_hash(
+            h = get_hash(
                 path
             )
 
 
-            if media_hash in used:
+            if h in used:
 
                 path.unlink(
                     missing_ok=True
@@ -372,33 +401,29 @@ def find_media(
 
 
 
-            if wanted == "image":
+            if wanted == "image" and kind == "image":
 
-                if kind == "image":
-
-                    return {
-                        "type":"image",
-                        "path":path,
-                        "hash":media_hash
-                    }
+                return {
+                    "type":"image",
+                    "path":path,
+                    "hash":h
+                }
 
 
 
             if wanted == "gif":
-
 
                 if kind == "gif":
 
                     return {
                         "type":"gif",
                         "path":path,
-                        "hash":media_hash
+                        "hash":h
                     }
 
 
 
                 if kind == "video":
-
 
                     gif = convert_gif(
                         path
@@ -415,7 +440,7 @@ def find_media(
                         return {
                             "type":"gif",
                             "path":gif,
-                            "hash":media_hash
+                            "hash":h
                         }
 
 
@@ -429,24 +454,21 @@ def find_media(
 
 
 
-
-# -------------------------
+# =========================
 # TELEGRAM
-# -------------------------
+# =========================
 
 def send_telegram(item):
 
-
     if item["type"] == "image":
 
-        endpoint = (
+        url = (
             f"https://api.telegram.org/"
             f"bot{TOKEN}/sendPhoto"
         )
 
 
         files = {
-
             "photo":
             (
                 "image.jpg",
@@ -455,21 +477,18 @@ def send_telegram(item):
                     "rb"
                 )
             )
-
         }
-
 
 
     else:
 
-        endpoint = (
+        url = (
             f"https://api.telegram.org/"
             f"bot{TOKEN}/sendAnimation"
         )
 
 
         files = {
-
             "animation":
             (
                 "animation.gif",
@@ -478,16 +497,14 @@ def send_telegram(item):
                     "rb"
                 )
             )
-
         }
-
 
 
 
     try:
 
         r = session.post(
-            endpoint,
+            url,
             data={
                 "chat_id":CHAT_ID
             },
@@ -515,28 +532,24 @@ def send_telegram(item):
 
 
 
-
-# -------------------------
+# =========================
 # MAIN
-# -------------------------
+# =========================
 
 def main():
 
     state = load_state()
 
 
-    wanted = required_type(
+    media_type = needed_type(
         state["index"]
     )
 
 
     media = find_media(
-        wanted,
+        media_type,
         set(
-            state.get(
-                "hashes",
-                []
-            )
+            state["hashes"]
         )
     )
 
@@ -586,8 +599,8 @@ def main():
 
 
     print(
-        "POST SUCCESS:",
-        wanted
+        "POST SUCCESS",
+        media_type
     )
 
 
