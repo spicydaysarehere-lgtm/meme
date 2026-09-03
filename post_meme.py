@@ -11,14 +11,18 @@ import urllib.error
 import urllib.parse
 import subprocess
 import tempfile
+import re
+import xml.etree.ElementTree as ET
 
 
 # ============================================================
 # SUBREDDITS
 # ============================================================
 
-# USE SFW SUBREDDITS ONLY.
-# Replace these with the SFW subreddits you want.
+# ONLY these subreddits are searched.
+#
+# Add/remove subreddit names here.
+#
 SUBREDDITS = [
     "nsfwanimegifs",
     "ecchi",
@@ -33,59 +37,42 @@ SUBREDDITS = [
 # SETTINGS
 # ============================================================
 
-# Posting order:
-#
-# IMAGE
-# IMAGE
-# GIF / ANIMATION
-# IMAGE
-# IMAGE
-# GIF / ANIMATION
-#
-IMAGE_TARGET = 2
+# Number of subreddits checked during one search cycle.
+SUBREDDITS_PER_SEARCH = 3
 
-POSTS_PER_SUBREDDIT = 100
+# Number of recent RSS posts requested from each subreddit.
+POSTS_PER_SUBREDDIT = 25
 
-FETCH_ATTEMPTS = 6
+# Number of times the bot searches again if it cannot find
+# the required media type.
+SEARCH_ATTEMPTS = 10
 
-HTTP_ATTEMPTS = 4
+# Maximum downloaded media size.
+MAX_MEDIA_SIZE = 50 * 1024 * 1024
 
-HISTORY_LIMIT = 5000
-
-
-# ------------------------------------------------------------
-# SIZE LIMITS
-# ------------------------------------------------------------
-
-MAX_MEDIA_SIZE = 49 * 1024 * 1024
-
+# Telegram image target.
 TELEGRAM_IMAGE_LIMIT = 9 * 1024 * 1024
 
+# Telegram animation target.
 TELEGRAM_ANIMATION_LIMIT = 49 * 1024 * 1024
 
+# Delay between failed searches.
+SEARCH_DELAY = 3
 
-# ------------------------------------------------------------
-# USER AGENT
-# ------------------------------------------------------------
+# Reddit RSS.
+#
+# Reddit's public RSS feed is used instead of the old
+# unauthenticated .json endpoint.
+REDDIT_RSS_URL = (
+    "https://www.reddit.com/r/{subreddit}/new/.rss"
+)
 
 USER_AGENT = (
-    "RedditTelegramMediaBot/10.0 "
-    "(GitHub Actions)"
-)
-
-
-# ------------------------------------------------------------
-# SOURCES
-# ------------------------------------------------------------
-
-MEME_API_URL = (
-    "https://meme-api.com/gimme/"
-    "{subreddit}/{count}"
-)
-
-REDDIT_JSON_URL = (
-    "https://www.reddit.com/r/"
-    "{subreddit}/new.json"
+    "Mozilla/5.0 "
+    "(Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 "
+    "(KHTML, like Gecko) "
+    "Chrome/129.0.0.0 Safari/537.36"
 )
 
 
@@ -94,35 +81,25 @@ REDDIT_JSON_URL = (
 # ============================================================
 
 BOT_TOKEN = os.environ.get(
-    "TELEGRAM_BOT_TOKEN",
-    ""
-).strip()
-
+    "TELEGRAM_BOT_TOKEN"
+)
 
 CHAT_ID = os.environ.get(
-    "TELEGRAM_CHAT_ID",
-    ""
-).strip()
+    "TELEGRAM_CHAT_ID"
+)
 
 
 # ============================================================
-# FILE LOCATIONS
+# HISTORY FILE
 # ============================================================
 
 BASE_DIR = os.path.dirname(
     os.path.abspath(__file__)
 )
 
-
 HISTORY_FILE = os.path.join(
     BASE_DIR,
     "posted.json"
-)
-
-
-STATE_FILE = os.path.join(
-    BASE_DIR,
-    "posting_state.json"
 )
 
 
@@ -135,15 +112,18 @@ def empty_history():
     return {
         "urls": [],
         "ids": [],
-        "hashes": []
+        "hashes": [],
+
+        # 0 = image
+        # 1 = image
+        # 2 = gif
+        "next_type": 0
     }
 
 
 def load_history():
 
-    if not os.path.exists(
-        HISTORY_FILE
-    ):
+    if not os.path.exists(HISTORY_FILE):
 
         return empty_history()
 
@@ -157,71 +137,74 @@ def load_history():
 
             data = json.load(file)
 
-        if isinstance(
-            data,
-            dict
+        if not isinstance(data, dict):
+
+            return empty_history()
+
+        history = {
+            "urls": data.get(
+                "urls",
+                []
+            ),
+
+            "ids": data.get(
+                "ids",
+                []
+            ),
+
+            "hashes": data.get(
+                "hashes",
+                []
+            ),
+
+            "next_type": data.get(
+                "next_type",
+                0
+            )
+        }
+
+        # Make sure next_type is valid.
+        if history["next_type"] not in (
+            0,
+            1,
+            2
         ):
 
-            return {
-                "urls": data.get(
-                    "urls",
-                    []
-                ),
-                "ids": data.get(
-                    "ids",
-                    []
-                ),
-                "hashes": data.get(
-                    "hashes",
-                    []
-                )
-            }
+            history["next_type"] = 0
 
-        if isinstance(
-            data,
-            list
-        ):
-
-            return {
-                "urls": data,
-                "ids": [],
-                "hashes": []
-            }
+        return history
 
     except Exception as error:
 
         print(
-            f"Could not load history: {error}",
-            file=sys.stderr,
-            flush=True
+            f"Could not load posted.json: {error}",
+            file=sys.stderr
         )
 
-    return empty_history()
+        return empty_history()
 
 
-def save_history(
-    history
-):
+def save_history(history):
 
     history["urls"] = (
         history.get(
             "urls",
             []
-        )[-HISTORY_LIMIT:]
+        )[-5000:]
     )
 
     history["ids"] = (
         history.get(
             "ids",
             []
-        )[-HISTORY_LIMIT:]
+        )[-5000:]
     )
 
     history["hashes"] = (
         history.get(
             "hashes",
             []
-        )[-HISTORY_LIMIT:]
+        )[-5000:]
     )
 
     temp_file = (
@@ -238,7 +221,8 @@ def save_history(
         json.dump(
             history,
             file,
-            indent=2
+            indent=2,
+            ensure_ascii=False
         )
 
     os.replace(
@@ -248,137 +232,12 @@ def save_history(
 
 
 # ============================================================
-# POSTING STATE
+# HTTP
 # ============================================================
 
-def load_state():
-
-    if not os.path.exists(
-        STATE_FILE
-    ):
-
-        return {
-            "images_since_animation": 0
-        }
-
-    try:
-
-        with open(
-            STATE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            data = json.load(file)
-
-        value = int(
-            data.get(
-                "images_since_animation",
-                0
-            )
-        )
-
-        value = max(
-            0,
-            min(
-                value,
-                IMAGE_TARGET
-            )
-        )
-
-        return {
-            "images_since_animation": value
-        }
-
-    except Exception:
-
-        return {
-            "images_since_animation": 0
-        }
-
-
-def save_state(
-    state
-):
-
-    temp_file = (
-        STATE_FILE
-        + ".tmp"
-    )
-
-    with open(
-        temp_file,
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        json.dump(
-            state,
-            file,
-            indent=2
-        )
-
-    os.replace(
-        temp_file,
-        STATE_FILE
-    )
-
-
-def required_media_type(
-    state
-):
-
-    if (
-        state[
-            "images_since_animation"
-        ]
-        < IMAGE_TARGET
-    ):
-
-        return "image"
-
-    return "animation"
-
-
-def advance_state(
-    state,
-    media_type
-):
-
-    if media_type == "image":
-
-        state[
-            "images_since_animation"
-        ] += 1
-
-        if (
-            state[
-                "images_since_animation"
-            ]
-            > IMAGE_TARGET
-        ):
-
-            state[
-                "images_since_animation"
-            ] = IMAGE_TARGET
-
-    elif media_type in (
-        "gif",
-        "animation_mp4"
-    ):
-
-        state[
-            "images_since_animation"
-        ] = 0
-
-
-# ============================================================
-# HTTP JSON
-# ============================================================
-
-def get_json(
+def http_get(
     url,
-    attempts=HTTP_ATTEMPTS
+    attempts=4
 ):
 
     last_error = None
@@ -390,38 +249,40 @@ def get_json(
 
         try:
 
+            print()
             print(
-                f"HTTP request "
-                f"{attempt}/{attempts}",
-                flush=True
+                f"HTTP {attempt}/{attempts}"
             )
 
-            print(
-                url,
-                flush=True
-            )
+            print(url)
 
             request = urllib.request.Request(
                 url,
                 headers={
                     "User-Agent": USER_AGENT,
-                    "Accept": "application/json",
-                    "Accept-Language": (
-                        "en-US,en;q=0.9"
-                    )
+                    "Accept": (
+                        "application/rss+xml, "
+                        "application/xml, "
+                        "text/xml, "
+                        "*/*"
+                    ),
+                    "Accept-Language":
+                        "en-US,en;q=0.9",
+                    "Cache-Control":
+                        "no-cache",
                 }
             )
 
             with urllib.request.urlopen(
                 request,
-                timeout=30
+                timeout=45
             ) as response:
 
-                status = (
-                    response.getcode()
-                )
+                status = response.getcode()
 
-                raw = response.read()
+                data = response.read(
+                    MAX_MEDIA_SIZE + 1
+                )
 
             if status != 200:
 
@@ -429,12 +290,15 @@ def get_json(
                     f"HTTP {status}"
                 )
 
-            return json.loads(
-                raw.decode(
-                    "utf-8",
-                    errors="replace"
+            if len(data) > (
+                MAX_MEDIA_SIZE
+            ):
+
+                raise RuntimeError(
+                    "Response exceeds size limit"
                 )
-            )
+
+            return data
 
         except urllib.error.HTTPError as error:
 
@@ -443,36 +307,26 @@ def get_json(
                 f"{error.reason}"
             )
 
+            print(
+                last_error,
+                file=sys.stderr
+            )
+
             if error.code in (
                 429,
                 500,
                 502,
                 503,
-                504,
-                520,
-                521,
-                522,
-                523,
-                524,
-                525,
-                526,
-                530
+                504
             ):
 
                 wait = min(
-                    2 ** attempt,
-                    15
+                    attempt * 5,
+                    30
                 )
 
                 print(
-                    f"Temporary error: "
-                    f"{last_error}",
-                    flush=True
-                )
-
-                print(
-                    f"Waiting {wait}s...",
-                    flush=True
+                    f"Waiting {wait} seconds..."
                 )
 
                 time.sleep(
@@ -480,12 +334,6 @@ def get_json(
                 )
 
                 continue
-
-            print(
-                last_error,
-                file=sys.stderr,
-                flush=True
-            )
 
             return None
 
@@ -496,22 +344,16 @@ def get_json(
             )
 
             print(
-                f"Request error: "
+                f"Request failed: "
                 f"{error}",
-                file=sys.stderr,
-                flush=True
+                file=sys.stderr
             )
 
             if attempt < attempts:
 
                 wait = min(
-                    2 ** attempt,
-                    15
-                )
-
-                print(
-                    f"Waiting {wait}s...",
-                    flush=True
+                    attempt * 4,
+                    20
                 )
 
                 time.sleep(
@@ -519,405 +361,518 @@ def get_json(
                 )
 
     print(
-        f"All HTTP attempts failed: "
-        f"{last_error}",
-        file=sys.stderr,
-        flush=True
+        f"All requests failed: {last_error}",
+        file=sys.stderr
     )
 
     return None
 
 
 # ============================================================
-# MEME API
+# RSS HELPERS
 # ============================================================
 
-def fetch_from_meme_api(
-    subreddit
+def strip_namespace(
+    tag
 ):
 
-    encoded = urllib.parse.quote(
-        subreddit
-    )
+    if "}" in tag:
 
-    url = MEME_API_URL.format(
-        subreddit=encoded,
-        count=min(
-            POSTS_PER_SUBREDDIT,
-            50
+        return tag.rsplit(
+            "}",
+            1
+        )[1]
+
+    return tag
+
+
+def element_text(
+    element
+):
+
+    if element is None:
+
+        return ""
+
+    return (
+        "".join(
+            element.itertext()
         )
+        .strip()
     )
 
-    data = get_json(
-        url
-    )
 
-    if not data:
+def find_child(
+    element,
+    wanted
+):
 
-        return []
+    for child in element.iter():
 
-    memes = data.get(
-        "memes",
-        []
-    )
-
-    if not isinstance(
-        memes,
-        list
-    ):
-
-        return []
-
-    posts = []
-
-    for meme in memes:
-
-        if not isinstance(
-            meme,
-            dict
+        if (
+            strip_namespace(
+                child.tag
+            ).lower()
+            == wanted.lower()
         ):
 
-            continue
+            return child
 
-        media_url = meme.get(
-            "url"
-        )
-
-        if not media_url:
-
-            continue
-
-        posts.append(
-            {
-                "id": str(
-                    meme.get(
-                        "postLink",
-                        ""
-                    )
-                ),
-                "postLink": str(
-                    meme.get(
-                        "postLink",
-                        ""
-                    )
-                ),
-                "subreddit": meme.get(
-                    "subreddit",
-                    subreddit
-                ),
-                "title": meme.get(
-                    "title",
-                    ""
-                ),
-                "url": media_url,
-                "nsfw": bool(
-                    meme.get(
-                        "nsfw",
-                        False
-                    )
-                ),
-                "spoiler": bool(
-                    meme.get(
-                        "spoiler",
-                        False
-                    )
-                ),
-                "_source": "meme-api"
-            }
-        )
-
-    print(
-        f"meme-api returned "
-        f"{len(posts)} posts for "
-        f"r/{subreddit}",
-        flush=True
-    )
-
-    return posts
+    return None
 
 
 # ============================================================
-# REDDIT JSON
+# EXTRACT URLS FROM RSS HTML
 # ============================================================
 
-def normalize_reddit_post(
-    child,
-    subreddit
+def extract_urls(
+    text
 ):
 
-    if not isinstance(
-        child,
-        dict
-    ):
+    if not text:
 
-        return None
+        return []
 
-    data = child.get(
-        "data",
-        {}
+    found = []
+
+    # --------------------------------------------------------
+    # Normal URLs
+    # --------------------------------------------------------
+
+    matches = re.findall(
+        r'https?://[^\s<>"\']+',
+        text
     )
 
-    if not isinstance(
-        data,
-        dict
-    ):
+    for url in matches:
 
-        return None
-
-    post_id = str(
-        data.get(
-            "id",
-            ""
+        url = (
+            url
+            .replace(
+                "&amp;",
+                "&"
+            )
+            .rstrip(
+                ".,);]>\"'"
+            )
         )
+
+        if url not in found:
+
+            found.append(
+                url
+            )
+
+    return found
+
+
+# ============================================================
+# NORMALIZE POST
+# ============================================================
+
+def normalize_rss_entry(
+    entry
+):
+
+    title = ""
+
+    post_url = ""
+
+    post_id = ""
+
+    content = ""
+
+    author = ""
+
+    # --------------------------------------------------------
+    # Read XML children
+    # --------------------------------------------------------
+
+    for child in entry.iter():
+
+        name = (
+            strip_namespace(
+                child.tag
+            ).lower()
+        )
+
+        text = element_text(
+            child
+        )
+
+        if name == "title":
+
+            if text:
+
+                title = text
+
+        elif name == "id":
+
+            if text:
+
+                post_id = text
+
+        elif name == "author":
+
+            if text:
+
+                author = text
+
+        elif name in (
+            "content",
+            "description"
+        ):
+
+            if text:
+
+                content += "\n" + text
+
+        elif name == "link":
+
+            href = child.attrib.get(
+                "href",
+                ""
+            )
+
+            if href:
+
+                post_url = href
+
+            elif text:
+
+                post_url = text
+
+    # --------------------------------------------------------
+    # Extract every URL from RSS content.
+    # --------------------------------------------------------
+
+    urls = extract_urls(
+        content
     )
 
-    permalink = data.get(
-        "permalink",
-        ""
-    )
+    # Also include the post link.
+    if post_url:
 
-    if permalink:
-
-        post_link = (
-            "https://www.reddit.com"
-            + permalink
+        urls.insert(
+            0,
+            post_url
         )
 
-    elif post_id:
+    # --------------------------------------------------------
+    # Clean URLs.
+    # --------------------------------------------------------
 
-        post_link = (
-            "https://redd.it/"
-            + post_id
+    clean_urls = []
+
+    for url in urls:
+
+        if not url:
+
+            continue
+
+        url = (
+            url
+            .replace(
+                "&amp;",
+                "&"
+            )
+            .strip()
         )
 
-    else:
+        if url not in clean_urls:
 
-        post_link = ""
-
-    url = (
-        data.get(
-            "url_overridden_by_dest"
-        )
-        or data.get(
-            "url"
-        )
-        or ""
-    )
-
-    if not url:
-
-        return None
+            clean_urls.append(
+                url
+            )
 
     return {
         "id": post_id,
-        "postLink": post_link,
-        "subreddit": data.get(
-            "subreddit",
-            subreddit
-        ),
-        "title": data.get(
-            "title",
-            ""
-        ),
-        "url": url,
-        "nsfw": bool(
-            data.get(
-                "over_18",
-                False
-            )
-        ),
-        "spoiler": bool(
-            data.get(
-                "spoiler",
-                False
-            )
-        ),
-        "_source": "reddit-json"
+        "post_url": post_url,
+        "title": title,
+        "author": author,
+        "content": content,
+        "urls": clean_urls,
     }
 
 
-def fetch_from_reddit(
+# ============================================================
+# FETCH REDDIT RSS
+# ============================================================
+
+def fetch_subreddit(
     subreddit
 ):
 
     encoded = urllib.parse.quote(
-        subreddit
+        subreddit,
+        safe=""
     )
 
-    query = urllib.parse.urlencode(
-        {
-            "limit": min(
-                POSTS_PER_SUBREDDIT,
-                100
-            ),
-            "raw_json": 1
-        }
+    url = REDDIT_RSS_URL.format(
+        subreddit=encoded
     )
 
-    url = (
-        REDDIT_JSON_URL.format(
-            subreddit=encoded
-        )
-        + "?"
-        + query
-    )
-
-    data = get_json(
+    data = http_get(
         url,
         attempts=3
     )
 
     if not data:
 
+        print(
+            f"r/{subreddit}: RSS request failed."
+        )
+
         return []
 
-    children = (
-        data
-        .get(
-            "data",
-            {}
+    try:
+
+        root = ET.fromstring(
+            data
         )
-        .get(
-            "children",
-            []
+
+    except ET.ParseError as error:
+
+        print(
+            f"r/{subreddit}: "
+            f"RSS XML parse error: {error}",
+            file=sys.stderr
         )
-    )
 
-    posts = []
+        return []
 
-    for child in children:
+    entries = []
 
-        post = normalize_reddit_post(
-            child,
-            subreddit
+    for element in root.iter():
+
+        name = (
+            strip_namespace(
+                element.tag
+            ).lower()
+        )
+
+        if name not in (
+            "entry",
+            "item"
+        ):
+
+            continue
+
+        post = normalize_rss_entry(
+            element
         )
 
         if post:
 
-            posts.append(
+            entries.append(
                 post
             )
 
+    # Limit the amount processed.
+    entries = entries[
+        :POSTS_PER_SUBREDDIT
+    ]
+
     print(
-        f"Reddit returned "
-        f"{len(posts)} posts for "
-        f"r/{subreddit}",
-        flush=True
+        f"r/{subreddit}: "
+        f"{len(entries)} RSS posts received."
     )
 
-    return posts
+    return entries
 
 
 # ============================================================
-# FETCH ALL SUBREDDITS
+# MEDIA URL DETECTION
 # ============================================================
 
-def fetch_candidate_posts():
+IMAGE_EXTENSIONS = (
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp"
+)
 
-    print()
-    print(
-        "========================================",
-        flush=True
-    )
+GIF_EXTENSIONS = (
+    ".gif",
+)
 
-    print(
-        "CHECKING SUBREDDITS",
-        flush=True
-    )
+VIDEO_EXTENSIONS = (
+    ".mp4",
+    ".m4v",
+    ".mov",
+    ".webm",
+)
 
-    print(
-        "========================================",
-        flush=True
-    )
 
-    all_posts = []
+def clean_media_url(
+    url
+):
 
-    # Shuffle the subreddit order so the same
-    # subreddit isn't always selected first.
-    subreddits = list(
-        SUBREDDITS
-    )
+    if not url:
 
-    random.shuffle(
-        subreddits
-    )
+        return ""
 
-    for subreddit in subreddits:
-
-        print()
-        print(
-            f"Checking r/{subreddit}",
-            flush=True
+    url = (
+        url
+        .replace(
+            "&amp;",
+            "&"
         )
-
-        posts = fetch_from_meme_api(
-            subreddit
-        )
-
-        if not posts:
-
-            print(
-                f"meme-api failed for "
-                f"r/{subreddit}",
-                flush=True
-            )
-
-            print(
-                "Trying Reddit JSON...",
-                flush=True
-            )
-
-            posts = fetch_from_reddit(
-                subreddit
-            )
-
-        if posts:
-
-            all_posts.extend(
-                posts
-            )
-
-        else:
-
-            print(
-                f"No posts received from "
-                f"r/{subreddit}",
-                flush=True
-            )
-
-    random.shuffle(
-        all_posts
+        .strip()
     )
 
-    return all_posts
+    # Remove surrounding HTML.
+    url = url.strip(
+        "<>\"'"
+    )
+
+    return url
+
+
+def url_extension(
+    url
+):
+
+    clean = (
+        url
+        .lower()
+        .split("?")[0]
+        .split("#")[0]
+    )
+
+    return os.path.splitext(
+        clean
+    )[1]
+
+
+def looks_like_image(
+    url
+):
+
+    lower = (
+        url
+        .lower()
+    )
+
+    return (
+        url_extension(url)
+        in IMAGE_EXTENSIONS
+        or "i.redd.it/" in lower
+    )
+
+
+def looks_like_gif(
+    url
+):
+
+    lower = (
+        url
+        .lower()
+    )
+
+    return (
+        url_extension(url)
+        in GIF_EXTENSIONS
+        or "giphy.com/media/" in lower
+        or "media.giphy.com/" in lower
+        or "i.redd.it/" in lower
+        and lower.endswith(".gif")
+    )
+
+
+def looks_like_video(
+    url
+):
+
+    lower = (
+        url
+        .lower()
+    )
+
+    return (
+        url_extension(url)
+        in VIDEO_EXTENSIONS
+        or "v.redd.it/" in lower
+    )
 
 
 # ============================================================
-# DOWNLOAD
+# REDDIT VIDEO URL
+# ============================================================
+
+def reddit_video_urls(
+    url
+):
+
+    lower = (
+        url
+        .lower()
+        .split("?")[0]
+        .rstrip("/")
+    )
+
+    if "v.redd.it/" not in lower:
+
+        return []
+
+    # Example:
+    #
+    # https://v.redd.it/abc123
+    #
+    # Try Reddit's normal MP4 representations.
+    base = url.split(
+        "?",
+        1
+    )[0].rstrip("/")
+
+    video_id = base.rsplit(
+        "/",
+        1
+    )[-1]
+
+    if not video_id:
+
+        return []
+
+    return [
+        f"https://v.redd.it/{video_id}/DASH_1080.mp4",
+        f"https://v.redd.it/{video_id}/DASH_720.mp4",
+        f"https://v.redd.it/{video_id}/DASH_480.mp4",
+        f"https://v.redd.it/{video_id}/DASH_360.mp4",
+    ]
+
+
+# ============================================================
+# DOWNLOAD MEDIA
 # ============================================================
 
 def download_media(
     url
 ):
 
-    print()
-    print(
-        "Downloading media:",
-        flush=True
+    url = clean_media_url(
+        url
     )
 
+    if not url:
+
+        return None, ""
+
+    print()
     print(
-        url,
-        flush=True
+        "Downloading:"
     )
+    print(url)
 
     try:
 
         request = urllib.request.Request(
             url,
             headers={
-                "User-Agent": USER_AGENT,
-                "Accept": "*/*"
+                "User-Agent":
+                    USER_AGENT,
+                "Accept":
+                    "*/*"
             }
         )
 
@@ -927,17 +882,11 @@ def download_media(
         ) as response:
 
             content_type = (
-                response
-                .headers
-                .get(
+                response.headers.get(
                     "Content-Type",
                     ""
                 )
                 .lower()
-                .split(
-                    ";"
-                )[0]
-                .strip()
             )
 
             data = response.read(
@@ -949,9 +898,7 @@ def download_media(
         ):
 
             print(
-                "Skipped: media is over "
-                "49 MB.",
-                flush=True
+                "Skipped: media exceeds 50 MB."
             )
 
             return None, ""
@@ -959,43 +906,35 @@ def download_media(
         if not data:
 
             print(
-                "Skipped: empty media.",
-                flush=True
+                "Skipped: empty media."
             )
 
             return None, ""
 
         print(
-            f"Downloaded: "
-            f"{len(data) / 1024 / 1024:.2f} MB",
-            flush=True
+            f"Downloaded "
+            f"{len(data) / 1024 / 1024:.2f} MB"
         )
 
         print(
             f"Content-Type: "
-            f"{content_type}",
-            flush=True
+            f"{content_type}"
         )
 
-        return (
-            data,
-            content_type
-        )
+        return data, content_type
 
     except Exception as error:
 
         print(
-            f"Download failed: "
-            f"{error}",
-            file=sys.stderr,
-            flush=True
+            f"Download failed: {error}",
+            file=sys.stderr
         )
 
         return None, ""
 
 
 # ============================================================
-# MEDIA TYPE DETECTION
+# DETECT MEDIA TYPE
 # ============================================================
 
 def detect_media_type(
@@ -1017,21 +956,52 @@ def detect_media_type(
 
     # --------------------------------------------------------
     # GIF
-    #
-    # Check the actual file bytes first.
-    # This is extremely important.
     # --------------------------------------------------------
 
-    if (
-        data.startswith(
-            b"GIF87a"
-        )
-        or data.startswith(
-            b"GIF89a"
-        )
+    if data.startswith(
+        b"GIF87a"
     ):
 
         return "gif"
+
+    if data.startswith(
+        b"GIF89a"
+    ):
+
+        return "gif"
+
+    if "image/gif" in content_type:
+
+        return "gif"
+
+    if clean_url.endswith(
+        ".gif"
+    ):
+
+        return "gif"
+
+    # --------------------------------------------------------
+    # MP4
+    # --------------------------------------------------------
+
+    if (
+        len(data) >= 12
+        and data[4:8] == b"ftyp"
+    ):
+
+        return "video"
+
+    if content_type.startswith(
+        "video/"
+    ):
+
+        return "video"
+
+    if clean_url.endswith(
+        VIDEO_EXTENSIONS
+    ):
+
+        return "video"
 
     # --------------------------------------------------------
     # JPEG
@@ -1048,7 +1018,7 @@ def detect_media_type(
     # --------------------------------------------------------
 
     if data.startswith(
-        b"\x89PNG\r\n\x1a\n"
+        b"\x89PNG"
     ):
 
         return "image"
@@ -1065,72 +1035,1330 @@ def detect_media_type(
 
         return "image"
 
-    # --------------------------------------------------------
-    # MP4 / MOV
-    # --------------------------------------------------------
-
-    if (
-        len(data) >= 12
-        and data[4:8] == b"ftyp"
-    ):
-
-        return "video"
-
-    # --------------------------------------------------------
-    # CONTENT TYPE
-    # --------------------------------------------------------
-
-    if content_type == "image/gif":
-
-        return "gif"
-
     if content_type.startswith(
         "image/"
     ):
 
         return "image"
 
-    if content_type.startswith(
-        "video/"
-    ):
-
-        return "video"
-
-    # --------------------------------------------------------
-    # URL FALLBACK
-    # --------------------------------------------------------
-
     if clean_url.endswith(
-        ".gif"
-    ):
-
-        return "gif"
-
-    if clean_url.endswith(
-        (
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".webp"
-        )
+        IMAGE_EXTENSIONS
     ):
 
         return "image"
-
-    if clean_url.endswith(
-        (
-            ".mp4",
-            ".m4v",
-            ".mov",
-            ".webm"
-        )
-    ):
-
-        return "video"
 
     return "unknown"
 
 
 # ============================================================
 # TEMP FILE
-# ====================================================
+# ============================================================
+
+def save_temp_file(
+    data,
+    suffix
+):
+
+    fd, path = tempfile.mkstemp(
+        suffix=suffix
+    )
+
+    os.close(fd)
+
+    with open(
+        path,
+        "wb"
+    ) as file:
+
+        file.write(data)
+
+    return path
+
+
+# ============================================================
+# PREPARE IMAGE
+# ============================================================
+
+def prepare_image(
+    data
+):
+
+    # Already small enough.
+    if len(data) <= (
+        TELEGRAM_IMAGE_LIMIT
+    ):
+
+        return data
+
+    print(
+        "Image is larger than Telegram target."
+    )
+
+    source = save_temp_file(
+        data,
+        ".source"
+    )
+
+    try:
+
+        attempts = [
+            ("92", "1920:-2"),
+            ("85", "1600:-2"),
+            ("78", "1400:-2"),
+            ("70", "1200:-2"),
+            ("60", "1000:-2"),
+            ("50", "900:-2"),
+        ]
+
+        for quality, scale in attempts:
+
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+
+                    "-i",
+                    source,
+
+                    "-vf",
+                    (
+                        f"scale={scale}:"
+                        "force_original_aspect_ratio=decrease"
+                    ),
+
+                    "-frames:v",
+                    "1",
+
+                    "-q:v",
+                    quality,
+
+                    "-f",
+                    "image2",
+
+                    "pipe:1"
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=90
+            )
+
+            output = result.stdout
+
+            if not output:
+
+                continue
+
+            print(
+                f"Image quality {quality}: "
+                f"{len(output) / 1024 / 1024:.2f} MB"
+            )
+
+            if len(output) <= (
+                TELEGRAM_IMAGE_LIMIT
+            ):
+
+                return output
+
+        return None
+
+    finally:
+
+        try:
+            os.remove(
+                source
+            )
+        except Exception:
+            pass
+
+
+# ============================================================
+# PREPARE VIDEO FOR TELEGRAM ANIMATION
+# ============================================================
+
+def prepare_video(
+    data
+):
+
+    source = save_temp_file(
+        data,
+        ".source"
+    )
+
+    output = tempfile.mktemp(
+        suffix=".mp4"
+    )
+
+    try:
+
+        command = [
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+
+            "-i",
+            source,
+
+            # Keep the entire video.
+            # No trimming.
+            "-map",
+            "0:v:0",
+
+            "-an",
+
+            "-c:v",
+            "libx264",
+
+            "-preset",
+            "veryfast",
+
+            "-crf",
+            "23",
+
+            "-pix_fmt",
+            "yuv420p",
+
+            "-movflags",
+            "+faststart",
+
+            output
+        ]
+
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180
+        )
+
+        if result.returncode != 0:
+
+            error = (
+                result.stderr.decode(
+                    "utf-8",
+                    errors="ignore"
+                )
+            )
+
+            print(
+                "FFmpeg failed:",
+                file=sys.stderr
+            )
+
+            print(
+                error[-3000:],
+                file=sys.stderr
+            )
+
+            return None
+
+        if not os.path.exists(
+            output
+        ):
+
+            return None
+
+        with open(
+            output,
+            "rb"
+        ) as file:
+
+            converted = file.read()
+
+        print(
+            f"Animation MP4: "
+            f"{len(converted) / 1024 / 1024:.2f} MB"
+        )
+
+        if len(converted) > (
+            TELEGRAM_ANIMATION_LIMIT
+        ):
+
+            print(
+                "Animation is too large."
+            )
+
+            return None
+
+        return converted
+
+    finally:
+
+        try:
+            os.remove(
+                source
+            )
+        except Exception:
+            pass
+
+        try:
+            os.remove(
+                output
+            )
+        except Exception:
+            pass
+
+
+# ============================================================
+# MULTIPART
+# ============================================================
+
+def multipart_field(
+    boundary,
+    name,
+    value
+):
+
+    return (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; '
+        f'name="{name}"\r\n'
+        f"\r\n"
+        f"{value}\r\n"
+    ).encode(
+        "utf-8"
+    )
+
+
+def multipart_file(
+    boundary,
+    field_name,
+    filename,
+    content_type,
+    data
+):
+
+    header = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; '
+        f'name="{field_name}"; '
+        f'filename="{filename}"\r\n"
+        f"Content-Type: {content_type}\r\n"
+        f"\r\n"
+    ).encode(
+        "utf-8"
+    )
+
+    return (
+        header
+        + data
+        + b"\r\n"
+    )
+
+
+# ============================================================
+# TELEGRAM UPLOAD
+# ============================================================
+
+def telegram_upload(
+    method,
+    field_name,
+    filename,
+    content_type,
+    data
+):
+
+    url = (
+        "https://api.telegram.org/"
+        f"bot{BOT_TOKEN}/{method}"
+    )
+
+    boundary = (
+        "----RedditTelegramBot"
+        + hashlib.md5(
+            os.urandom(16)
+        ).hexdigest()
+    )
+
+    body = bytearray()
+
+    body.extend(
+        multipart_field(
+            boundary,
+            "chat_id",
+            CHAT_ID
+        )
+    )
+
+    body.extend(
+        multipart_file(
+            boundary,
+            field_name,
+            filename,
+            content_type,
+            data
+        )
+    )
+
+    body.extend(
+        f"--{boundary}--\r\n".encode(
+            "utf-8"
+        )
+    )
+
+    request = urllib.request.Request(
+        url,
+        data=bytes(body),
+        method="POST",
+        headers={
+            "Content-Type":
+                "multipart/form-data; "
+                f"boundary={boundary}"
+        }
+    )
+
+    with urllib.request.urlopen(
+        request,
+        timeout=240
+    ) as response:
+
+        raw = response.read().decode(
+            "utf-8",
+            errors="replace"
+        )
+
+    return json.loads(
+        raw
+    )
+
+
+# ============================================================
+# SEND IMAGE
+# ============================================================
+
+def send_image(
+    data
+):
+
+    print()
+    print(
+        "Sending Telegram IMAGE..."
+    )
+
+    result = telegram_upload(
+        "sendPhoto",
+        "photo",
+        "image.jpg",
+        "image/jpeg",
+        data
+    )
+
+    if not result.get(
+        "ok"
+    ):
+
+        print(
+            "Telegram image error:"
+        )
+
+        print(
+            json.dumps(
+                result,
+                indent=2
+            )
+        )
+
+        return False
+
+    print(
+        "Telegram image sent successfully."
+    )
+
+    return True
+
+
+# ============================================================
+# SEND GIF
+# ============================================================
+
+def send_gif(
+    data,
+    original_type
+):
+
+    print()
+    print(
+        "Sending Telegram ANIMATION..."
+    )
+
+    print(
+        f"Original type: {original_type}"
+    )
+
+    # --------------------------------------------------------
+    # REAL GIF
+    #
+    # IMPORTANT:
+    # The original GIF bytes are sent directly.
+    #
+    # We DO NOT convert GIF -> image.
+    # We DO NOT take only one frame.
+    # --------------------------------------------------------
+
+    if original_type == "gif":
+
+        if len(data) > (
+            TELEGRAM_ANIMATION_LIMIT
+        ):
+
+            print(
+                "GIF is too large."
+            )
+
+            return False
+
+        result = telegram_upload(
+            "sendAnimation",
+            "animation",
+            "animation.gif",
+            "image/gif",
+            data
+        )
+
+    # --------------------------------------------------------
+    # VIDEO
+    #
+    # Telegram's animation endpoint accepts MP4.
+    # --------------------------------------------------------
+
+    else:
+
+        result = telegram_upload(
+            "sendAnimation",
+            "animation",
+            "animation.mp4",
+            "video/mp4",
+            data
+        )
+
+    if not result.get(
+        "ok"
+    ):
+
+        print(
+            "Telegram animation error:"
+        )
+
+        print(
+            json.dumps(
+                result,
+                indent=2
+            )
+        )
+
+        return False
+
+    print(
+        "Telegram animation sent successfully."
+    )
+
+    return True
+
+
+# ============================================================
+# DETERMINE REQUIRED FORMAT
+# ============================================================
+
+def required_media_type(
+    next_type
+):
+
+    if next_type in (
+        0,
+        1
+    ):
+
+        return "image"
+
+    return "gif"
+
+
+def advance_next_type(
+    current
+):
+
+    # Sequence:
+    #
+    # 0 = image
+    # 1 = image
+    # 2 = gif
+    #
+    if current == 0:
+
+        return 1
+
+    if current == 1:
+
+        return 2
+
+    return 0
+
+
+# ============================================================
+# GET MEDIA CANDIDATES FROM RSS POST
+# ============================================================
+
+def candidate_media_urls(
+    post
+):
+
+    urls = post.get(
+        "urls",
+        []
+    )
+
+    candidates = []
+
+    for url in urls:
+
+        url = clean_media_url(
+            url
+        )
+
+        if not url:
+
+            continue
+
+        # ----------------------------------------------------
+        # Direct media
+        # ----------------------------------------------------
+
+        if (
+            looks_like_image(url)
+            or looks_like_gif(url)
+            or looks_like_video(url)
+        ):
+
+            if url not in candidates:
+
+                candidates.append(
+                    url
+                )
+
+        # ----------------------------------------------------
+        # Reddit video
+        # ----------------------------------------------------
+
+        if "v.redd.it/" in (
+            url.lower()
+        ):
+
+            for video_url in reddit_video_urls(
+                url
+            ):
+
+                if video_url not in candidates:
+
+                    candidates.append(
+                        video_url
+                    )
+
+    return candidates
+
+
+# ============================================================
+# TRY POST
+# ============================================================
+
+def prepare_candidate(
+    post,
+    wanted_type
+):
+
+    urls = candidate_media_urls(
+        post
+    )
+
+    if not urls:
+
+        return None
+
+    for url in urls:
+
+        # ----------------------------------------------------
+        # If we specifically need an image, don't download
+        # obvious video/GIF URLs.
+        # ----------------------------------------------------
+
+        if wanted_type == "image":
+
+            if (
+                looks_like_gif(url)
+                or looks_like_video(url)
+            ):
+
+                continue
+
+        # ----------------------------------------------------
+        # If we need GIF/animation, skip obvious photos.
+        # ----------------------------------------------------
+
+        if wanted_type == "gif":
+
+            if looks_like_image(
+                url
+            ) and not looks_like_gif(
+                url
+            ):
+
+                continue
+
+        data, content_type = download_media(
+            url
+        )
+
+        if data is None:
+
+            continue
+
+        media_type = detect_media_type(
+            url,
+            data,
+            content_type
+        )
+
+        print(
+            f"Detected media type: "
+            f"{media_type}"
+        )
+
+        # ----------------------------------------------------
+        # IMAGE
+        # ----------------------------------------------------
+
+        if wanted_type == "image":
+
+            if media_type != "image":
+
+                continue
+
+            prepared = prepare_image(
+                data
+            )
+
+            if prepared is None:
+
+                continue
+
+            return {
+                "data": prepared,
+                "telegram_type": "image",
+                "original_url": url,
+                "original_type": media_type,
+            }
+
+        # ----------------------------------------------------
+        # GIF
+        # ----------------------------------------------------
+
+        if wanted_type == "gif":
+
+            # ------------------------------------------------
+            # REAL GIF:
+            #
+            # Send the ORIGINAL GIF.
+            # ------------------------------------------------
+
+            if media_type == "gif":
+
+                if len(data) > (
+                    TELEGRAM_ANIMATION_LIMIT
+                ):
+
+                    continue
+
+                return {
+                    "data": data,
+                    "telegram_type": "gif",
+                    "original_url": url,
+                    "original_type": "gif",
+                }
+
+            # ------------------------------------------------
+            # VIDEO:
+            #
+            # Convert video to MP4 animation.
+            # The whole video is retained.
+            # ------------------------------------------------
+
+            if media_type == "video":
+
+                prepared = prepare_video(
+                    data
+                )
+
+                if prepared is None:
+
+                    continue
+
+                return {
+                    "data": prepared,
+                    "telegram_type": "gif",
+                    "original_url": url,
+                    "original_type": "video",
+                }
+
+    return None
+
+
+# ============================================================
+# FETCH CANDIDATES
+# ============================================================
+
+def find_media(
+    history,
+    wanted_type
+):
+
+    seen_urls = set(
+        history.get(
+            "urls",
+            []
+        )
+    )
+
+    seen_ids = set(
+        history.get(
+            "ids",
+            []
+        )
+    )
+
+    # --------------------------------------------------------
+    # Search all configured subreddits in random order.
+    #
+    # This is important:
+    #
+    # If subreddit A doesn't have the required format,
+    # we automatically try subreddit B, C, etc.
+    # --------------------------------------------------------
+
+    subreddit_pool = list(
+        SUBREDDITS
+    )
+
+    random.shuffle(
+        subreddit_pool
+    )
+
+    print()
+    print(
+        "Required media type:"
+    )
+    print(
+        wanted_type
+    )
+
+    for attempt in range(
+        1,
+        SEARCH_ATTEMPTS + 1
+    ):
+
+        print()
+        print(
+            "========================================"
+        )
+
+        print(
+            f"SEARCH ATTEMPT "
+            f"{attempt}/{SEARCH_ATTEMPTS}"
+        )
+
+        print(
+            "========================================"
+        )
+
+        # Rotate the starting subreddit so repeated runs
+        # don't always begin with the same one.
+        start = (
+            (attempt - 1)
+            * SUBREDDITS_PER_SEARCH
+        ) % len(
+            subreddit_pool
+        )
+
+        selected = []
+
+        for offset in range(
+            len(subreddit_pool)
+        ):
+
+            index = (
+                start + offset
+            ) % len(
+                subreddit_pool
+            )
+
+            selected.append(
+                subreddit_pool[index]
+            )
+
+            if len(selected) >= (
+                SUBREDDITS_PER_SEARCH
+            ):
+
+                break
+
+        for subreddit in selected:
+
+            print()
+            print(
+                "Checking:"
+            )
+            print(
+                f"r/{subreddit}"
+            )
+
+            posts = fetch_subreddit(
+                subreddit
+            )
+
+            if not posts:
+
+                print(
+                    f"No RSS posts from "
+                    f"r/{subreddit}."
+                )
+
+                continue
+
+            random.shuffle(
+                posts
+            )
+
+            for post in posts:
+
+                post_url = post.get(
+                    "post_url",
+                    ""
+                )
+
+                post_id = post.get(
+                    "id",
+                    ""
+                )
+
+                # ------------------------------------------------
+                # Duplicate URL
+                # ------------------------------------------------
+
+                if (
+                    post_url
+                    and post_url in seen_urls
+                ):
+
+                    print(
+                        "Skipped previously posted URL."
+                    )
+
+                    continue
+
+                # ------------------------------------------------
+                # Duplicate Reddit ID
+                # ------------------------------------------------
+
+                if (
+                    post_id
+                    and post_id in seen_ids
+                ):
+
+                    print(
+                        "Skipped previously posted Reddit post."
+                    )
+
+                    continue
+
+                prepared = prepare_candidate(
+                    post,
+                    wanted_type
+                )
+
+                if prepared is None:
+
+                    continue
+
+                post["_prepared"] = prepared
+
+                post["_post_id"] = post_id
+
+                post["_subreddit"] = subreddit
+
+                return post
+
+        print()
+        print(
+            "No matching media found in this search."
+        )
+
+        if attempt < SEARCH_ATTEMPTS:
+
+            print(
+                f"Waiting {SEARCH_DELAY} seconds..."
+            )
+
+            time.sleep(
+                SEARCH_DELAY
+            )
+
+    return None
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print()
+    print(
+        "========================================"
+    )
+    print(
+        "REDDIT → TELEGRAM MEDIA BOT"
+    )
+    print(
+        "========================================"
+    )
+
+    print(
+        "Posting sequence:"
+    )
+
+    print(
+        "IMAGE → IMAGE → GIF → repeat"
+    )
+
+    print(
+        "========================================"
+    )
+
+    # --------------------------------------------------------
+    # Environment
+    # --------------------------------------------------------
+
+    if not BOT_TOKEN:
+
+        print(
+            "ERROR: TELEGRAM_BOT_TOKEN is missing.",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+    if not CHAT_ID:
+
+        print(
+            "ERROR: TELEGRAM_CHAT_ID is missing.",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+    if not SUBREDDITS:
+
+        print(
+            "ERROR: SUBREDDITS is empty.",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+    # --------------------------------------------------------
+    # History
+    # --------------------------------------------------------
+
+    history = load_history()
+
+    print(
+        f"Stored URLs: "
+        f"{len(history['urls'])}"
+    )
+
+    print(
+        f"Stored Reddit IDs: "
+        f"{len(history['ids'])}"
+    )
+
+    print(
+        f"Stored hashes: "
+        f"{len(history['hashes'])}"
+    )
+
+    next_type = history.get(
+        "next_type",
+        0
+    )
+
+    wanted_type = required_media_type(
+        next_type
+    )
+
+    print()
+    print(
+        f"Next required type: "
+        f"{wanted_type}"
+    )
+
+    # --------------------------------------------------------
+    # Find media
+    # --------------------------------------------------------
+
+    post = find_media(
+        history,
+        wanted_type
+    )
+
+    if not post:
+
+        print()
+        print(
+            "========================================"
+        )
+
+        print(
+            "NO MEDIA FOUND"
+        )
+
+        print(
+            f"Required type: {wanted_type}"
+        )
+
+        print(
+            "The bot checked the configured "
+            "subreddits."
+        )
+
+        print(
+            "Nothing was posted."
+        )
+
+        print(
+            "========================================"
+        )
+
+        # IMPORTANT:
+        # Exit with an error so GitHub Actions doesn't falsely
+        # report a successful posting run.
+        sys.exit(2)
+
+    prepared = post.get(
+        "_prepared"
+    )
+
+    if not prepared:
+
+        print(
+            "ERROR: Prepared media missing.",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+    data = prepared.get(
+        "data"
+    )
+
+    telegram_type = prepared.get(
+        "telegram_type"
+    )
+
+    original_url = prepared.get(
+        "original_url",
+        ""
+    )
+
+    original_type = prepared.get(
+        "original_type",
+        ""
+    )
+
+    if not data:
+
+        print(
+            "ERROR: Empty prepared media.",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+    print()
+    print(
+        "========================================"
+    )
+
+    print(
+        "MEDIA SELECTED"
+    )
+
+    print(
+        f"Subreddit: "
+        f"r/{post.get('_subreddit', '')}"
+    )
+
+    print(
+        f"Telegram type: "
+        f"{telegram_type}"
+    )
+
+    print(
+        f"Original type: "
+        f"{original_type}"
+    )
+
+    print(
+        f"Size: "
+        f"{len(data) / 1024 / 1024:.2f} MB"
+    )
+
+    print(
+        f"URL: "
+        f"{original_url}"
+    )
+
+    print(
+        "========================================"
+    )
+
+    # --------------------------------------------------------
+    # Send
+    # --------------------------------------------------------
+
+    if telegram_type == "image":
+
+        success = send_image(
+            data
+        )
+
+    elif telegram_type == "gif":
+
+        success = send_gif(
+            data,
+            original_type
+        )
+
+    else:
+
+        print(
+            "ERROR: Unknown Telegram type.",
+            file=sys.stderr
+        )
+
+        sys.exit(1)
+
+    # --------------------------------------------------------
+    # Telegram failed
+    # --------------------------------------------------------
+
+    if not success:
+
+        print()
+        print(
+            "Telegram posting FAILED."
+        )
+
+        print(
+            "History was NOT changed."
+        )
+
+        sys.exit(1)
+
+    # --------------------------------------------------------
+    # Save duplicate history
+    # --------------------------------------------------------
+
+    post_url = post.get(
+        "post_url",
+        ""
+    )
+
+    post_id = post.get(
+        "_post_id",
+        ""
+    )
+
+    digest = hashlib.sha256(
+        data
+    ).hexdigest()
+
+    if post_url:
+
+        history["urls"].append(
+            post_url
+        )
+
+    if post_id:
+
+        history["ids"].append(
+            post_id
+        )
+
+    history["hashes"].append(
+        digest
+    )
+
+    # --------------------------------------------------------
+    # Advance sequence ONLY after successful Telegram post.
+    # --------------------------------------------------------
+
+    history["next_type"] = (
+        advance_next_type(
+            next_type
+        )
+    )
+
+    save_history(
+        history
+    )
+
+    print()
+    print(
+        "========================================"
+    )
+
+    print(
+        "POST SUCCESSFUL"
+    )
+
+    print(
+        "========================================"
+    )
+
+    print(
+        f"Subreddit: "
+        f"r/{post.get('_subreddit', '')}"
+    )
+
+    print(
+        f"Posted as: "
+        f"{telegram_type}"
+    )
+
+    print(
+        f"Next posting type: "
+        f"{required_media_type(history['next_type'])}"
+    )
+
+    print(
+        "posted.json updated."
+    )
+
+    print(
+        "Finished successfully."
+    )
+
+    print(
+        "========================================"
+    )
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
