@@ -26,6 +26,7 @@ jobs:
     runs-on: ubuntu-latest
 
 
+
     steps:
 
 
@@ -104,7 +105,7 @@ jobs:
 
           if git diff --cached --quiet; then
 
-            echo "No history changes"
+            echo "No changes"
 
             exit 0
 
@@ -112,11 +113,12 @@ jobs:
 
 
 
-          git commit -m "Update posted history"
+          git commit -m "Update posting history"
 
 
 
-          git pull origin main --rebase || true
+          git pull origin main --rebase
+
 
 
           git push origin main
