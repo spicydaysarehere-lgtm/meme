@@ -1,169 +1,103 @@
 #!/usr/bin/env python3
 
-import json
 import os
-import random
-import subprocess
 import sys
-import tempfile
+import json
+import random
 import time
 import uuid
+import shutil
+import tempfile
+import subprocess
 from pathlib import Path
 from urllib.parse import urlparse
 
 import requests
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+# ================= CONFIG =================
 
 SUBREDDITS = [
-    "nsfwanimegifs",
-    "ecchi",
-    "OverOppai",
-    "CFNM_Hentai",
-    "EcchiCurves",
-    "animeplot",
+    "memes",
+    "wholesomememes",
+    "anime",
+    "animememes",
+    "funny",
 ]
 
-MEME_API_URL = "https://meme-api.com/gimme/{subreddit}/{count}"
+MEME_API_URL = "https://meme-api.com/gimme/{}/{}"
 
-TELEGRAM_API = "https://api.telegram.org/bot{token}"
+TELEGRAM_API = "https://api.telegram.org/bot{}"
 
 POSTED_FILE = Path("posted.json")
 
-TELEGRAM_IMAGE_LIMIT = 9 * 1024 * 1024
-TELEGRAM_ANIMATION_LIMIT = 49 * 1024 * 1024
+PHOTO_LIMIT = 9 * 1024 * 1024
+GIF_LIMIT = 49 * 1024 * 1024
 
-MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024
+MAX_DOWNLOAD = 100 * 1024 * 1024
 
-REQUEST_TIMEOUT = 30
-
-POSTS_PER_SUBREDDIT = 50
-
-API_RETRIES = 3
-DOWNLOAD_RETRIES = 3
-
-GIF_FPS = 12
-GIF_WIDTH = 480
-
-
-# ============================================================
-# ENVIRONMENT
-# ============================================================
-
-TELEGRAM_BOT_TOKEN = os.environ.get(
+TELEGRAM_BOT_TOKEN = os.getenv(
     "TELEGRAM_BOT_TOKEN",
     ""
-).strip()
+)
 
-TELEGRAM_CHAT_ID = os.environ.get(
+TELEGRAM_CHAT_ID = os.getenv(
     "TELEGRAM_CHAT_ID",
     ""
-).strip()
-
-
-if not TELEGRAM_BOT_TOKEN:
-    print("ERROR: TELEGRAM_BOT_TOKEN missing")
-    sys.exit(1)
-
-
-if not TELEGRAM_CHAT_ID:
-    print("ERROR: TELEGRAM_CHAT_ID missing")
-    sys.exit(1)
-
-
-# ============================================================
-# HTTP
-# ============================================================
+)
 
 session = requests.Session()
 
-session.headers.update(
-    {
-        "User-Agent":
-        "RedditTelegramMediaBot/1.0"
-    }
-)
+session.headers.update({
+    "User-Agent": "RedditTelegramBot/1.0"
+})
 
 
-# ============================================================
-# STATE
-# ============================================================
+# ================= STATE =================
 
 def load_state():
-
     if not POSTED_FILE.exists():
-
         return {
-            "sequence_index": 0,
+            "sequence": 0,
             "posted": []
         }
 
     try:
-
-        with POSTED_FILE.open(
+        with open(
+            POSTED_FILE,
             "r",
             encoding="utf-8"
         ) as f:
+            return json.load(f)
 
-            data = json.load(f)
-
+    except:
         return {
-            "sequence_index":
-                int(data.get("sequence_index",0)),
-            "posted":
-                data.get("posted",[])
-        }
-
-    except Exception:
-
-        return {
-            "sequence_index":0,
-            "posted":[]
+            "sequence": 0,
+            "posted": []
         }
 
 
-
-def save_state(state):
-
-    tmp = POSTED_FILE.with_suffix(".tmp")
-
-    with tmp.open(
+def save_state(data):
+    with open(
+        POSTED_FILE,
         "w",
         encoding="utf-8"
     ) as f:
-
         json.dump(
-            state,
+            data,
             f,
             indent=2
         )
 
-    tmp.replace(
-        POSTED_FILE
-    )
+
+def needed_type(index):
+    return "gif" if index % 3 == 2 else "photo"
 
 
+# ================= HELPERS =================
 
-def required_media_type(index):
-
-    return (
-        "gif"
-        if index % 3 == 2
-        else "photo"
-    )
-
-
-# ============================================================
-# HELPERS
-# ============================================================
-
-def filename_from_url(url):
-
+def filename(url):
     try:
-
         name = Path(
             urlparse(url).path
         ).name
@@ -171,753 +105,289 @@ def filename_from_url(url):
         if name:
             return name
 
-    except Exception:
+    except:
         pass
 
     return "media"
 
 
+def media_type(path):
 
-def is_gif_bytes(data):
+    with open(path,"rb") as f:
+        head=f.read(32)
 
-    return (
-        data.startswith(b"GIF87a")
-        or
-        data.startswith(b"GIF89a")
-    )
-
-
-
-def is_image_bytes(data):
-
-    return (
-        data.startswith(b"\xff\xd8\xff")
-        or
-        data.startswith(b"\x89PNG")
-        or
-        (
-            len(data)>=12
-            and data[:4]==b"RIFF"
-            and data[8:12]==b"WEBP"
-        )
-    )
-
-
-
-def safe_name(x):
-
-    return (
-        str(x)
-        .replace("/","")
-        .replace("\\","")
-        .strip()
-    )
-
-
-# ============================================================
-# FETCH REDDIT
-# ============================================================
-
-def get_posts(subreddit):
-
-    subreddit = safe_name(
-        subreddit
-    )
-
-    url = MEME_API_URL.format(
-        subreddit=subreddit,
-        count=POSTS_PER_SUBREDDIT
-    )
-
-
-    for attempt in range(
-        1,
-        API_RETRIES+1
-    ):
-
-        try:
-
-            print(
-                "Fetching:",
-                subreddit
-            )
-
-            r = session.get(
-                url,
-                timeout=REQUEST_TIMEOUT
-            )
-
-
-            if r.status_code != 200:
-
-                time.sleep(2)
-                continue
-
-
-            data = r.json()
-
-            posts = data.get(
-                "memes",
-                []
-            )
-
-
-            random.shuffle(
-                posts
-            )
-
-
-            return posts
-
-
-        except Exception as e:
-
-            print(
-                e
-            )
-
-
-    return []
-
-
-# ============================================================
-# DOWNLOAD
-# ============================================================
-
-def download(url,path):
-
-    for attempt in range(
-        1,
-        DOWNLOAD_RETRIES+1
-    ):
-
-        try:
-
-            r = session.get(
-                url,
-                stream=True,
-                timeout=REQUEST_TIMEOUT
-            )
-
-
-            if r.status_code != 200:
-                continue
-
-
-            size = 0
-
-
-            with open(
-                path,
-                "wb"
-            ) as f:
-
-
-                for chunk in r.iter_content(
-                    1024*1024
-                ):
-
-                    if not chunk:
-                        continue
-
-
-                    size += len(chunk)
-
-
-                    if size > MAX_DOWNLOAD_SIZE:
-
-                        return False
-
-
-                    f.write(
-                        chunk
-                    )
-
-
-            return True
-
-
-        except Exception:
-
-            time.sleep(2)
-
-
-    return False
-
-
-# ============================================================
-# MEDIA DETECTION
-# ============================================================
-
-def detect_media_type(path):
-
-    try:
-
-        with open(
-            path,
-            "rb"
-        ) as f:
-
-            header = f.read(32)
-
-
-        if is_gif_bytes(header):
-
-            return "gif"
-
-
-        if is_image_bytes(header):
-
-            return "image"
-
-
-    except Exception:
-
-        pass
-
-
-    suffix = path.suffix.lower()
-
-
-    if suffix == ".gif":
-
+    if head.startswith(b"GIF"):
         return "gif"
 
-
-    if suffix in (
-        ".jpg",
-        ".jpeg",
-        ".png",
-        ".webp"
+    if (
+        head.startswith(b"\xff\xd8")
+        or head.startswith(b"\x89PNG")
+        or (
+            head[0:4]==b"RIFF"
+            and head[8:12]==b"WEBP"
+        )
     ):
-
         return "image"
 
 
-    if suffix in (
+    ext=path.suffix.lower()
+
+    if ext in [
         ".mp4",
         ".webm",
-        ".mov",
-        ".m4v"
-    ):
-
+        ".mov"
+    ]:
         return "video"
-
 
     return "unknown"
 
 
+# ================= REDDIT =================
 
-# ============================================================
-# FFMPEG CHECK
-# ============================================================
-
-def check_ffmpeg():
+def get_posts(sub):
 
     try:
-
-        r = subprocess.run(
-            [
-                "ffmpeg",
-                "-version"
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+        r=session.get(
+            MEME_API_URL.format(
+                sub,
+                50
+            ),
+            timeout=30
         )
 
+        if r.status_code != 200:
+            return []
 
-        return r.returncode == 0
+        data=r.json()
+
+        posts=data.get(
+            "memes",
+            []
+        )
+
+        random.shuffle(posts)
+
+        return posts
+
+    except Exception as e:
+        print(e)
+        return []
 
 
-    except Exception:
+# ================= DOWNLOAD =================
 
+def download(url,path):
+
+    try:
+        r=session.get(
+            url,
+            stream=True,
+            timeout=30
+        )
+
+        if r.status_code != 200:
+            return False
+
+
+        size=0
+
+        with open(
+            path,
+            "wb"
+        ) as f:
+
+            for chunk in r.iter_content(
+                1024*1024
+            ):
+
+                size+=len(chunk)
+
+                if size > MAX_DOWNLOAD:
+                    return False
+
+                f.write(chunk)
+
+        return True
+
+
+    except Exception as e:
+        print(e)
         return False
 
 
+# ================= FFMPEG =================
 
-# ============================================================
-# VIDEO TO GIF
-# ============================================================
+def convert_to_gif(video, output):
 
-def convert_video_to_gif(
-    video,
-    output
-):
-
-    command = [
-
+    cmd = [
         "ffmpeg",
         "-y",
-
         "-i",
         str(video),
-
         "-vf",
-
         (
-            f"fps={GIF_FPS},"
-            f"scale={GIF_WIDTH}:-1,"
+            "fps=12,"
+            "scale=480:-1,"
             "split[s0][s1];"
             "[s0]palettegen[p];"
             "[s1][p]paletteuse"
         ),
-
         "-loop",
         "0",
-
         str(output)
-
     ]
 
-
-    result = subprocess.run(
-        command,
+    r = subprocess.run(
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE
     )
 
+    return (
+        r.returncode == 0
+        and output.exists()
+        and media_type(output) == "gif"
+    )
 
-    if result.returncode != 0:
+
+# ================= FIND MEDIA =================
+
+def find_media(required, posted):
+
+    posted=set(posted)
+
+    for sub in SUBREDDITS:
 
         print(
-            result.stderr.decode(
-                errors="ignore"
-            )
+            "Checking r/" + sub
         )
 
-        return False
-
-
-
-    if not output.exists():
-
-        return False
-
-
-
-    return detect_media_type(
-        output
-    ) == "gif"
-
-
-
-# ============================================================
-# GIF SIZE CONTROL
-# ============================================================
-
-def compress_gif(
-    gif
-):
-
-    if gif.stat().st_size <= TELEGRAM_ANIMATION_LIMIT:
-
-        return gif
-
-
-
-    output = gif.with_name(
-        "compressed.gif"
-    )
-
-
-    command = [
-
-        "ffmpeg",
-        "-y",
-
-        "-i",
-        str(gif),
-
-        "-vf",
-
-        (
-            "fps=8,"
-            "scale=360:-1,"
-            "split[s0][s1];"
-            "[s0]palettegen[p];"
-            "[s1][p]paletteuse"
-        ),
-
-        "-loop",
-        "0",
-
-        str(output)
-
-    ]
-
-
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-
-
-    if result.returncode != 0:
-
-        return None
-
-
-
-    if not output.exists():
-
-        return None
-
-
-
-    if output.stat().st_size > TELEGRAM_ANIMATION_LIMIT:
-
-        return None
-
-
-
-    return output
-
-
-
-# ============================================================
-# IMAGE COMPRESSION
-# ============================================================
-
-def compress_image(
-    image
-):
-
-    if image.stat().st_size <= TELEGRAM_IMAGE_LIMIT:
-
-        return image
-
-
-
-    output = image.with_name(
-        "telegram.jpg"
-    )
-
-
-    command = [
-
-        "ffmpeg",
-        "-y",
-
-        "-i",
-        str(image),
-
-        "-vf",
-        "scale=1280:-2",
-
-        "-q:v",
-        "7",
-
-        str(output)
-
-    ]
-
-
-    result = subprocess.run(
-        command,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE
-    )
-
-
-    if result.returncode != 0:
-
-        return None
-
-
-
-    return output
-
-
-
-# ============================================================
-# FIND MEDIA
-# ============================================================
-
-def find_media(
-    required,
-    posted
-):
-
-    subs = list(
-        SUBREDDITS
-    )
-
-    random.shuffle(
-        subs
-    )
-
-
-    posted = set(
-        posted
-    )
-
-
-    for subreddit in subs:
-
-
-        print(
-            "Checking r/" + subreddit
-        )
-
-
-        posts = get_posts(
-            subreddit
-        )
-
-
-        for post in posts:
-
-
-            post_id = str(
-                post.get(
-                    "postLink"
-                    or
-                    post.get("url")
-                )
+        for post in get_posts(sub):
+
+            post_id=str(
+                post.get("postLink")
+                or post.get("url")
+                or ""
             )
 
+            if not post_id:
+                continue
 
             if post_id in posted:
-
                 continue
 
 
-
-            url = str(
+            url=str(
                 post.get(
                     "url",
                     ""
                 )
             )
 
-
             if not url:
-
                 continue
 
 
-
-            title = str(
-                post.get(
-                    "title",
-                    ""
-                )
+            title=post.get(
+                "title",
+                ""
             )
 
 
+            work=tempfile.mkdtemp()
 
-            with tempfile.TemporaryDirectory() as tmp:
+            path=Path(work)/filename(url)
 
 
-                tmp = Path(
-                    tmp
+            if not download(
+                url,
+                path
+            ):
+                shutil.rmtree(
+                    work,
+                    ignore_errors=True
                 )
+                continue
 
 
-                source = tmp / filename_from_url(
-                    url
-                )
+            kind=media_type(path)
 
 
-                if not download(
-                    url,
-                    source
-                ):
+            # PHOTO
 
-                    continue
+            if required=="photo":
 
-
-
-                media_type = detect_media_type(
-                    source
-                )
-
-
-
-                # ----------------------------
-                # PHOTO SLOT
-                # ----------------------------
-
-                if required == "photo":
-
-
-                    if media_type != "image":
-
-                        continue
-
-
+                if kind=="image":
 
                     return {
-
                         "type":"photo",
-
-                        "path":source,
-
-                        "subreddit":subreddit,
-
+                        "path":path,
+                        "folder":work,
+                        "sub":sub,
                         "id":post_id,
-
                         "title":title
-
                     }
 
 
+            # GIF
 
-                # ----------------------------
-                # GIF SLOT
-                # ----------------------------
+            if required=="gif":
 
-                if required == "gif":
+                if kind=="gif":
+
+                    return {
+                        "type":"gif",
+                        "path":path,
+                        "folder":work,
+                        "sub":sub,
+                        "id":post_id,
+                        "title":title
+                    }
 
 
-                    if media_type == "gif":
+                if kind=="video":
 
+                    gif=Path(work)/"animation.gif"
+
+                    if convert_to_gif(
+                        path,
+                        gif
+                    ):
 
                         return {
-
                             "type":"gif",
-
-                            "path":source,
-
-                            "subreddit":subreddit,
-
+                            "path":gif,
+                            "folder":work,
+                            "sub":sub,
                             "id":post_id,
-
                             "title":title
-
                         }
 
 
-
-                    if media_type == "video":
-
-
-                        gif = tmp / "animation.gif"
-
-
-                        if convert_video_to_gif(
-                            source,
-                            gif
-                        ):
-
-
-                            return {
-
-                                "type":"gif",
-
-                                "path":gif,
-
-                                "subreddit":subreddit,
-
-                                "id":post_id,
-
-                                "title":title
-
-                            }
+            shutil.rmtree(
+                work,
+                ignore_errors=True
+            )
 
 
     return None
 
 
-# ============================================================
-# TELEGRAM UPLOAD
-# ============================================================
 
-def telegram_upload(
+# ================= TELEGRAM =================
+
+def upload(
     method,
     field,
-    file_path,
-    filename,
+    file,
+    name,
     mime,
     caption
 ):
 
-    boundary = (
-        "----Bot"
-        + uuid.uuid4().hex
-    )
-
-    body = bytearray()
-
-
-    def add_text(
-        name,
-        value
-    ):
-
-        body.extend(
-            (
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; name="{name}"\r\n'
-                f"\r\n"
-                f"{value}\r\n"
-            ).encode()
-        )
-
-
-
-    def add_file(
-        name,
-        path
-    ):
-
-        body.extend(
-            (
-                f"--{boundary}\r\n"
-                f'Content-Disposition: form-data; '
-                f'name="{name}"; '
-                f'filename="{filename}"\r\n'
-                f"Content-Type: {mime}\r\n"
-                f"\r\n"
-            ).encode()
-        )
-
-
-        with open(
-            path,
-            "rb"
-        ) as f:
-
-            body.extend(
-                f.read()
-            )
-
-
-        body.extend(
-            b"\r\n"
-        )
-
-
-
-    add_text(
-        "chat_id",
-        TELEGRAM_CHAT_ID
-    )
-
-
-    if caption:
-
-        add_text(
-            "caption",
-            caption
-        )
-
-
-    add_file(
-        field,
-        file_path
-    )
-
-
-    body.extend(
-        f"--{boundary}--\r\n".encode()
-    )
-
-
-    url = (
+    url=(
         TELEGRAM_API.format(
-            token=TELEGRAM_BOT_TOKEN
+            TELEGRAM_BOT_TOKEN
         )
         +
         "/"
@@ -928,31 +398,43 @@ def telegram_upload(
 
     try:
 
-        r = session.post(
-            url,
-            data=bytes(body),
-            headers={
-                "Content-Type":
-                f"multipart/form-data; boundary={boundary}"
-            },
-            timeout=180
-        )
+        with open(
+            file,
+            "rb"
+        ) as f:
+
+            files={
+                field:(
+                    name,
+                    f,
+                    mime
+                )
+            }
+
+            data={
+                "chat_id":
+                    TELEGRAM_CHAT_ID,
+                "caption":
+                    caption
+            }
 
 
-        data = r.json()
-
-
-        if not data.get("ok"):
-
-            print(
-                data
+            r=session.post(
+                url,
+                data=data,
+                files=files,
+                timeout=180
             )
 
-            return False
 
+        result=r.json()
 
-        return True
+        print(result)
 
+        return result.get(
+            "ok",
+            False
+        )
 
 
     except Exception as e:
@@ -966,219 +448,28 @@ def telegram_upload(
 
 
 
-# ============================================================
-# SEND PHOTO
-# ============================================================
+def send_photo(path,sub):
 
-def send_photo(
-    path,
-    subreddit
-):
-
-    path = compress_image(
-        path
-    )
-
-
-    if not path:
-
-        return False
-
-
-
-    return telegram_upload(
+    return upload(
         "sendPhoto",
         "photo",
         path,
         "image.jpg",
         "image/jpeg",
-        f"r/{subreddit}"
+        "r/"+sub
     )
 
 
 
-# ============================================================
-# SEND GIF
-# ============================================================
+def send_gif(path,sub):
 
-def send_gif(
-    path,
-    subreddit
-):
-
-    if detect_media_type(path) != "gif":
-
-        print(
-            "Not a real GIF"
-        )
-
-        return False
-
-
-
-    path = compress_gif(
-        path
-    )
-
-
-    if not path:
-
-        return False
-
-
-
-    return telegram_upload(
+    return upload(
         "sendAnimation",
         "animation",
         path,
         "animation.gif",
         "image/gif",
-        f"r/{subreddit}"
+        "r/"+sub
     )
 
 
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    print(
-        "Reddit Telegram Media Bot"
-    )
-
-
-    if not check_ffmpeg():
-
-        print(
-            "FFmpeg missing"
-        )
-
-        return 1
-
-
-
-    state = load_state()
-
-
-    index = state.get(
-        "sequence_index",
-        0
-    )
-
-
-    required = required_media_type(
-        index
-    )
-
-
-    print(
-        "Required:",
-        required
-    )
-
-
-    media = find_media(
-        required,
-        state.get(
-            "posted",
-            []
-        )
-    )
-
-
-    if not media:
-
-        print(
-            "No media found"
-        )
-
-        return 1
-
-
-
-    success = False
-
-
-
-    if media["type"] == "photo":
-
-        success = send_photo(
-            media["path"],
-            media["subreddit"]
-        )
-
-
-
-    elif media["type"] == "gif":
-
-        success = send_gif(
-            media["path"],
-            media["subreddit"]
-        )
-
-
-
-    if not success:
-
-        print(
-            "Upload failed"
-        )
-
-        return 1
-
-
-
-    state["posted"].append(
-        media["id"]
-    )
-
-
-    if len(state["posted"]) > 1000:
-
-        state["posted"] = (
-            state["posted"][-1000:]
-        )
-
-
-
-    state["sequence_index"] = (
-        index + 1
-    )
-
-
-    save_state(
-        state
-    )
-
-
-    print(
-        "POST SUCCESS"
-    )
-
-
-    return 0
-
-
-
-if __name__ == "__main__":
-
-    try:
-
-        sys.exit(
-            main()
-        )
-
-    except KeyboardInterrupt:
-
-        sys.exit(130)
-
-    except Exception as e:
-
-        print(
-            "Fatal:",
-            e
-        )
-
-        sys.exit(1)
