@@ -1,10 +1,10 @@
-name: Reddit to Telegram Media Bot
+name: Post Reddit Media
 
 on:
+  workflow_dispatch:
+
   schedule:
     - cron: "0 */2 * * *"
-
-  workflow_dispatch:
 
 permissions:
   contents: write
@@ -12,8 +12,6 @@ permissions:
 jobs:
   post:
     runs-on: ubuntu-latest
-
-    timeout-minutes: 30
 
     steps:
 
@@ -37,7 +35,11 @@ jobs:
         run: |
           python --version
           ffmpeg -version | head -n 1
-          ffprobe -version | head -n 1
+
+      - name: Install Python packages
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install requests
 
       - name: Run bot
         env:
@@ -49,63 +51,18 @@ jobs:
       - name: Save history
         if: success()
         run: |
-
-          echo "========================================"
-          echo "SAVING POST HISTORY"
-          echo "========================================"
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          if [ ! -f posted.json ]; then
-            echo "Creating posted.json..."
-
-            cat > posted.json <<'EOF'
-          {
-            "urls": [],
-            "ids": [],
-            "hashes": [],
-            "next_type": 0
-          }
-          EOF
-          fi
 
           git add posted.json
 
           if git diff --cached --quiet; then
-            echo "No history changes."
+            echo "No state changes to commit."
             exit 0
           fi
 
-          git commit -m "Update Telegram posting history"
+          git commit -m "Update posting history"
 
-          git fetch origin main
-
-          if ! git rebase origin/main; then
-
-            echo "Rebase conflict detected."
-
-            if git ls-files -u | grep -q "posted.json"; then
-
-              echo "Resolving posted.json conflict..."
-
-              git checkout --theirs posted.json
-              git add posted.json
-
-              GIT_EDITOR=true git rebase --continue
-
-            else
-
-              echo "Unable to resolve conflict."
-
-              git rebase --abort
-
-              exit 1
-
-            fi
-
-          fi
+          git pull --rebase origin main || true
 
           git push origin HEAD:main
-
-          echo "History saved successfully."
