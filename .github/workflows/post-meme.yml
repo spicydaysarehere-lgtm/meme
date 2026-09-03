@@ -13,13 +13,13 @@ jobs:
   post:
     runs-on: ubuntu-latest
 
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
 
-      # ------------------------------------------------------
+      # ======================================================
       # CHECKOUT
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -28,9 +28,9 @@ jobs:
           ref: main
 
 
-      # ------------------------------------------------------
+      # ======================================================
       # PYTHON
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -38,9 +38,9 @@ jobs:
           python-version: "3.11"
 
 
-      # ------------------------------------------------------
+      # ======================================================
       # FFMPEG
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Install FFmpeg
         run: |
@@ -48,9 +48,9 @@ jobs:
           sudo apt-get install -y ffmpeg
 
 
-      # ------------------------------------------------------
+      # ======================================================
       # VERIFY
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Verify installation
         run: |
@@ -59,72 +59,94 @@ jobs:
           ffprobe -version | head -n 1
 
 
-      # ------------------------------------------------------
+      # ======================================================
       # RUN BOT
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
         run: |
           python -u post_meme.py
 
 
-      # ------------------------------------------------------
+      # ======================================================
       # SAVE HISTORY
-      # ------------------------------------------------------
+      # ======================================================
 
       - name: Save history
         if: success()
-
         run: |
 
+          echo "========================================"
+          echo "SAVING POST HISTORY"
+          echo "========================================"
+
           git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git config user.email \
-            "41898282+github-actions[bot]@users.noreply.github.com"
+          # Make sure the history file exists.
+          if [ ! -f posted.json ]; then
+            echo "posted.json does not exist."
+            echo "Creating empty history file..."
 
-          git add posted.json posting_state.json
+            cat > posted.json <<'EOF'
+          {
+            "urls": [],
+            "ids": [],
+            "hashes": []
+          }
+          EOF
+          fi
 
+          echo "History file:"
+          cat posted.json
+
+          # Only add the file that this bot actually uses.
+          git add posted.json
+
+          # Nothing changed.
           if git diff --cached --quiet; then
             echo "No history changes."
             exit 0
           fi
 
-          git commit \
-            -m "Update Telegram posting history"
+          git commit -m "Update Telegram posting history"
 
+          # Get the newest version of main.
           git fetch origin main
 
+          # Rebase if another GitHub Actions run changed the
+          # repository while this run was working.
           if ! git rebase origin/main; then
 
             echo "Rebase conflict detected."
 
-            git status --short
+            # The history file belongs to the bot running now.
+            # Keep the current version of posted.json.
+            if git ls-files -u | grep -q "posted.json"; then
 
-            if git ls-files -u | grep -q .; then
+              echo "Resolving posted.json conflict..."
 
-              echo "Resolving history files..."
+              git checkout --theirs posted.json
+              git add posted.json
 
-              git checkout --theirs -- \
-                posted.json \
-                posting_state.json
-
-              git add \
-                posted.json \
-                posting_state.json
-
-              GIT_EDITOR=true \
-                git rebase --continue
+              GIT_EDITOR=true git rebase --continue
 
             else
 
+              echo "Unable to resolve rebase conflict."
+              git rebase --abort
               exit 1
 
             fi
 
           fi
 
+          # Push the updated history.
           git push origin HEAD:main
+
+          echo "========================================"
+          echo "HISTORY SAVED SUCCESSFULLY"
+          echo "========================================"
