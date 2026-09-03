@@ -1,4 +1,3 @@
-# PART 1/2
 #!/usr/bin/env python3
 
 import os
@@ -21,293 +20,416 @@ SUBREDDITS = [
     "animeplot",
 ]
 
-API = "https://meme-api.com/gimme/{}/50"
-STATE = Path("posted.json")
+API_URL = "https://meme-api.com/gimme/{}/50"
 
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN","")
-CHAT = os.getenv("TELEGRAM_CHAT_ID","")
+STATE_FILE = Path("posted.json")
 
-if not TOKEN or not CHAT:
-    print("Missing telegram settings")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+if not TOKEN or not CHAT_ID:
+    print("Missing Telegram secrets")
     sys.exit(1)
 
-s = requests.Session()
-s.headers["User-Agent"] = "TelegramRedditBot/1.0"
+
+session = requests.Session()
+session.headers.update(
+    {
+        "User-Agent": "RedditTelegramMediaBot/1.0"
+    }
+)
 
 
-def load():
-    if not STATE.exists():
-        return {"index":0,"posted":[]}
+def load_state():
+
+    if not STATE_FILE.exists():
+        return {
+            "index": 0,
+            "posted": []
+        }
+
     try:
-        return json.loads(STATE.read_text())
-    except:
-        return {"index":0,"posted":[]}
+
+        data = json.loads(
+            STATE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
+
+        return {
+            "index": int(
+                data.get(
+                    "index",
+                    data.get(
+                        "sequence_index",
+                        0
+                    )
+                )
+            ),
+            "posted": data.get(
+                "posted",
+                []
+            )
+        }
+
+    except Exception:
+
+        return {
+            "index": 0,
+            "posted": []
+        }
 
 
-def save(x):
-    STATE.write_text(json.dumps(x,indent=2))
+
+def save_state(data):
+
+    STATE_FILE.write_text(
+        json.dumps(
+            data,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
 
 
-def need(i):
-    return "gif" if i % 3 == 2 else "image"
+
+def needed_type(index):
+
+    return "gif" if index % 3 == 2 else "image"
 
 
-def kind(p):
+
+def detect(path):
+
     try:
-        h=p.read_bytes()[:32]
 
-        if h.startswith(b"GIF"):
+        header = path.read_bytes()[:32]
+
+        if header.startswith(b"GIF"):
             return "gif"
 
         if (
-            h.startswith(b"\xff\xd8")
-            or h.startswith(b"\x89PNG")
+            header.startswith(b"\xff\xd8")
+            or header.startswith(b"\x89PNG")
             or (
-                h[:4]==b"RIFF"
-                and h[8:12]==b"WEBP"
+                len(header) >= 12
+                and header[:4] == b"RIFF"
+                and header[8:12] == b"WEBP"
             )
         ):
             return "image"
 
     except:
+
         pass
 
-    e=p.suffix.lower()
 
-    if e==".gif":
+    ext = path.suffix.lower()
+
+    if ext == ".gif":
         return "gif"
 
-    if e in [".jpg",".jpeg",".png",".webp"]:
+    if ext in (
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp"
+    ):
         return "image"
 
-    if e in [".mp4",".webm",".mov",".m4v"]:
+    if ext in (
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".m4v"
+    ):
         return "video"
 
     return "unknown"
 
 
-def get_posts(sub):
+
+def download(url, path):
+
     try:
-        r=s.get(
-            API.format(sub),
-            timeout=30
-        )
 
-        if r.status_code==200:
-            a=r.json().get("memes",[])
-            random.shuffle(a)
-            return a
-
-    except:
-        pass
-
-    return []
-
-
-def download(url,p):
-    try:
-        r=s.get(
+        r = session.get(
             url,
             timeout=40
         )
 
-        if r.status_code!=200:
+        if r.status_code != 200:
             return False
 
-        p.write_bytes(r.content)
+        path.write_bytes(
+            r.content
+        )
+
         return True
 
     except:
+
         return False
 
 
-def video_gif(src,out):
 
-    cmd=[
+def make_gif(video, output):
+
+    cmd = [
         "ffmpeg",
         "-y",
         "-i",
-        str(src),
+        str(video),
         "-vf",
         "fps=10,scale=480:-1:flags=lanczos",
         "-loop",
         "0",
-        str(out)
+        str(output)
     ]
 
-    r=subprocess.run(
+    result = subprocess.run(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
 
     return (
-        r.returncode==0
-        and out.exists()
-        and kind(out)=="gif"
+        result.returncode == 0
+        and output.exists()
+        and detect(output) == "gif"
     )
 
 
-def find(required,posted):
 
-    subs=SUBREDDITS[:]
+def find_media(required, posted):
+
+    subs = SUBREDDITS[:]
+
     random.shuffle(subs)
 
     for sub in subs:
 
-        for post in get_posts(sub):
+        try:
 
-            pid=(
+            data = session.get(
+                API_URL.format(sub),
+                timeout=40
+            ).json()
+
+            posts = data.get(
+                "memes",
+                []
+            )
+
+        except:
+
+            continue
+
+
+        random.shuffle(posts)
+
+
+        for post in posts:
+
+            post_id = (
                 post.get("postLink")
                 or post.get("url")
             )
 
-            if not pid or pid in posted:
+
+            if not post_id:
                 continue
 
-            url=post.get("url","")
+
+            if post_id in posted:
+                continue
+
+
+            url = post.get(
+                "url",
+                ""
+            )
+
 
             if not url:
                 continue
 
-            with tempfile.TemporaryDirectory() as d:
 
-                src=Path(d)/"file"
+            temp = tempfile.NamedTemporaryFile(
+                delete=False
+            )
 
-                if not download(url,src):
-                    continue
+            temp.close()
 
-                t=kind(src)
 
-                if required=="image" and t=="image":
+            path = Path(
+                temp.name
+            )
+
+
+            if not download(
+                url,
+                path
+            ):
+
+                path.unlink(
+                    missing_ok=True
+                )
+
+                continue
+
+
+            kind = detect(path)
+
+
+            if required == "image":
+
+                if kind == "image":
+
                     return {
-                        "type":"image",
-                        "path":src,
-                        "sub":sub,
-                        "id":pid,
-                        "temp":d
+                        "type": "image",
+                        "path": path,
+                        "subreddit": sub,
+                        "id": post_id
                     }
 
-                if required=="gif":
 
-                    if t=="gif":
+
+            if required == "gif":
+
+                if kind == "gif":
+
+                    return {
+                        "type": "gif",
+                        "path": path,
+                        "subreddit": sub,
+                        "id": post_id
+                    }
+
+
+                if kind == "video":
+
+                    gif = path.with_suffix(
+                        ".gif"
+                    )
+
+
+                    if make_gif(
+                        path,
+                        gif
+                    ):
+
+                        path.unlink(
+                            missing_ok=True
+                        )
+
+
                         return {
-                            "type":"gif",
-                            "path":src,
-                            "sub":sub,
-                            "id":pid,
-                            "temp":d
+                            "type": "gif",
+                            "path": gif,
+                            "subreddit": sub,
+                            "id": post_id
                         }
 
-                    if t=="video":
 
-                        out=Path(d)/"animation.gif"
+            path.unlink(
+                missing_ok=True
+            )
 
-                        if video_gif(src,out):
-                            return {
-                                "type":"gif",
-                                "path":out,
-                                "sub":sub,
-                                "id":pid,
-                                "temp":d
-                            }
 
     return None
-    # PART 2/2
 
-def telegram(method,field,path,name,mime,caption=""):
 
-    url=f"https://api.telegram.org/bot{TOKEN}/{method}"
 
-    with open(path,"rb") as f:
+def send_telegram(item):
 
-        files={
-            field:(
-                name,
-                f,
-                mime
+    if item["type"] == "image":
+
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{TOKEN}/sendPhoto"
+        )
+
+        files = {
+            "photo": (
+                "image.jpg",
+                open(
+                    item["path"],
+                    "rb"
+                ),
+                "image/jpeg"
             )
         }
 
-        data={
-            "chat_id":CHAT
+
+    else:
+
+        url = (
+            f"https://api.telegram.org/"
+            f"bot{TOKEN}/sendAnimation"
+        )
+
+
+        files = {
+            "animation": (
+                "animation.gif",
+                open(
+                    item["path"],
+                    "rb"
+                ),
+                "image/gif"
+            )
         }
 
-        # NO IMAGE CAPTION
-        if method=="sendAnimation":
-            data["caption"]=caption
 
-        try:
-            r=s.post(
-                url,
-                data=data,
-                files=files,
-                timeout=180
-            )
+    try:
 
-            j=r.json()
-
-            return j.get("ok",False)
-
-        except Exception as e:
-            print(e)
-            return False
+        r = session.post(
+            url,
+            data={
+                "chat_id": CHAT_ID
+            },
+            files=files,
+            timeout=180
+        )
 
 
-
-def send_image(path):
-
-    # remove any possible caption
-    return telegram(
-        "sendPhoto",
-        "photo",
-        path,
-        "image.jpg",
-        "image/jpeg"
-    )
+        return r.json().get(
+            "ok",
+            False
+        )
 
 
+    except:
 
-def send_gif(path,sub):
+        return False
 
-    return telegram(
-        "sendAnimation",
-        "animation",
-        path,
-        "animation.gif",
-        "image/gif",
-        f"r/{sub}"
-    )
+
+    finally:
+
+        for f in files.values():
+
+            f[1].close()
 
 
 
 def main():
 
-    state=load()
+    state = load_state()
 
-    idx=state.get(
-        "index",
-        0
+
+    required = needed_type(
+        state["index"]
     )
 
-    posted=set(
-        state.get(
-            "posted",
-            []
+
+    media = find_media(
+        required,
+        set(
+            state["posted"]
         )
     )
 
-    required=need(idx)
-
-    print(
-        "Looking for",
-        required
-    )
-
-    media=find(
-        required,
-        posted
-    )
 
     if not media:
 
@@ -318,25 +440,10 @@ def main():
         return 1
 
 
-    ok=False
 
-
-    if media["type"]=="image":
-
-        ok=send_image(
-            media["path"]
-        )
-
-
-    elif media["type"]=="gif":
-
-        ok=send_gif(
-            media["path"],
-            media["sub"]
-        )
-
-
-    if not ok:
+    if not send_telegram(
+        media
+    ):
 
         print(
             "Telegram failed"
@@ -345,49 +452,40 @@ def main():
         return 1
 
 
+
     state["posted"].append(
         media["id"]
     )
 
 
-    if len(state["posted"])>1000:
+    if len(
+        state["posted"]
+    ) > 1000:
 
-        state["posted"]=(
+        state["posted"] = (
             state["posted"][-1000:]
         )
 
 
-    state["index"]=idx+1
+    state["index"] += 1
 
 
-    save(state)
+    save_state(
+        state
+    )
 
 
     print(
         "POST SUCCESS"
     )
 
+
     return 0
 
 
 
-if __name__=="__main__":
+if __name__ == "__main__":
 
-    try:
-
-        sys.exit(
-            main()
-        )
-
-    except KeyboardInterrupt:
-
-        sys.exit(130)
-
-    except Exception as e:
-
-        print(
-            "ERROR:",
-            e
-        )
-
-        sys.exit(1)
+    sys.exit(
+        main()
+    )
