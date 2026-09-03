@@ -19,6 +19,7 @@ SUBREDDITS = [
     "CFNM_Hentai",
     "EcchiCurves",
     "animeplot",
+    "UnderOppai"
 ]
 
 
