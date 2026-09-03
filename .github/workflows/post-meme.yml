@@ -17,40 +17,21 @@ jobs:
 
     steps:
 
-      # ======================================================
-      # CHECKOUT
-      # ======================================================
-
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: main
 
-
-      # ======================================================
-      # PYTHON
-      # ======================================================
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-
-      # ======================================================
-      # FFMPEG
-      # ======================================================
-
       - name: Install FFmpeg
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg
-
-
-      # ======================================================
-      # VERIFY
-      # ======================================================
 
       - name: Verify installation
         run: |
@@ -58,22 +39,12 @@ jobs:
           ffmpeg -version | head -n 1
           ffprobe -version | head -n 1
 
-
-      # ======================================================
-      # RUN BOT
-      # ======================================================
-
       - name: Run bot
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python -u post_meme.py
-
-
-      # ======================================================
-      # SAVE HISTORY
-      # ======================================================
 
       - name: Save history
         if: success()
@@ -86,27 +57,21 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Make sure the history file exists.
           if [ ! -f posted.json ]; then
-            echo "posted.json does not exist."
-            echo "Creating empty history file..."
+            echo "Creating posted.json..."
 
             cat > posted.json <<'EOF'
           {
             "urls": [],
             "ids": [],
-            "hashes": []
+            "hashes": [],
+            "next_type": 0
           }
           EOF
           fi
 
-          echo "History file:"
-          cat posted.json
-
-          # Only add the file that this bot actually uses.
           git add posted.json
 
-          # Nothing changed.
           if git diff --cached --quiet; then
             echo "No history changes."
             exit 0
@@ -114,17 +79,12 @@ jobs:
 
           git commit -m "Update Telegram posting history"
 
-          # Get the newest version of main.
           git fetch origin main
 
-          # Rebase if another GitHub Actions run changed the
-          # repository while this run was working.
           if ! git rebase origin/main; then
 
             echo "Rebase conflict detected."
 
-            # The history file belongs to the bot running now.
-            # Keep the current version of posted.json.
             if git ls-files -u | grep -q "posted.json"; then
 
               echo "Resolving posted.json conflict..."
@@ -136,17 +96,16 @@ jobs:
 
             else
 
-              echo "Unable to resolve rebase conflict."
+              echo "Unable to resolve conflict."
+
               git rebase --abort
+
               exit 1
 
             fi
 
           fi
 
-          # Push the updated history.
           git push origin HEAD:main
 
-          echo "========================================"
-          echo "HISTORY SAVED SUCCESSFULLY"
-          echo "========================================"
+          echo "History saved successfully."
