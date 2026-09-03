@@ -4,6 +4,7 @@ import os
 import sys
 import json
 import random
+import hashlib
 import tempfile
 import subprocess
 from pathlib import Path
@@ -20,72 +21,77 @@ SUBREDDITS = [
     "animeplot",
 ]
 
+
 API_URL = "https://meme-api.com/gimme/{}/50"
 
 STATE_FILE = Path("posted.json")
 
-TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+
+TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
+
+CHAT_ID = os.environ.get(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
+
 
 if not TOKEN or not CHAT_ID:
     print("Missing Telegram secrets")
     sys.exit(1)
 
 
+
 session = requests.Session()
+
 session.headers.update(
     {
-        "User-Agent": "RedditTelegramMediaBot/1.0"
+        "User-Agent":
+        "RedditMediaBot/2.0"
     }
 )
 
 
+
+# -------------------------
+# STATE
+# -------------------------
+
 def load_state():
 
     if not STATE_FILE.exists():
+
         return {
             "index": 0,
-            "posted": []
+            "hashes": []
         }
+
 
     try:
 
-        data = json.loads(
+        return json.loads(
             STATE_FILE.read_text(
                 encoding="utf-8"
             )
         )
 
-        return {
-            "index": int(
-                data.get(
-                    "index",
-                    data.get(
-                        "sequence_index",
-                        0
-                    )
-                )
-            ),
-            "posted": data.get(
-                "posted",
-                []
-            )
-        }
 
-    except Exception:
+    except:
 
         return {
             "index": 0,
-            "posted": []
+            "hashes": []
         }
 
 
 
-def save_state(data):
+def save_state(state):
 
     STATE_FILE.write_text(
         json.dumps(
-            data,
+            state,
             indent=2
         ),
         encoding="utf-8"
@@ -93,41 +99,71 @@ def save_state(data):
 
 
 
-def needed_type(index):
+# -------------------------
+# ROTATION
+# -------------------------
 
-    return "gif" if index % 3 == 2 else "image"
+def required_type(index):
+
+    pattern = [
+        "image",
+        "image",
+        "gif"
+    ]
+
+    return pattern[
+        index % 3
+    ]
+
+
+
+# -------------------------
+# FILE CHECK
+# -------------------------
+
+def file_hash(path):
+
+    h = hashlib.sha256()
+
+    with open(
+        path,
+        "rb"
+    ) as f:
+
+        while True:
+
+            chunk = f.read(8192)
+
+            if not chunk:
+                break
+
+            h.update(chunk)
+
+
+    return h.hexdigest()
 
 
 
 def detect(path):
 
-    try:
+    data = path.read_bytes()[:32]
 
-        header = path.read_bytes()[:32]
 
-        if header.startswith(b"GIF"):
-            return "gif"
+    if data.startswith(
+        b"GIF"
+    ):
+        return "gif"
 
-        if (
-            header.startswith(b"\xff\xd8")
-            or header.startswith(b"\x89PNG")
-            or (
-                len(header) >= 12
-                and header[:4] == b"RIFF"
-                and header[8:12] == b"WEBP"
-            )
-        ):
-            return "image"
 
-    except:
-
-        pass
+    if (
+        data.startswith(b"\xff\xd8")
+        or data.startswith(b"\x89PNG")
+    ):
+        return "image"
 
 
     ext = path.suffix.lower()
 
-    if ext == ".gif":
-        return "gif"
 
     if ext in (
         ".jpg",
@@ -137,35 +173,51 @@ def detect(path):
     ):
         return "image"
 
+
+    if ext in (
+        ".gif",
+    ):
+        return "gif"
+
+
     if ext in (
         ".mp4",
         ".webm",
-        ".mov",
-        ".m4v"
+        ".mov"
     ):
         return "video"
+
 
     return "unknown"
 
 
 
-def download(url, path):
+
+# -------------------------
+# DOWNLOAD
+# -------------------------
+
+def download(url,path):
 
     try:
 
         r = session.get(
             url,
-            timeout=40
+            timeout=60
         )
+
 
         if r.status_code != 200:
             return False
+
 
         path.write_bytes(
             r.content
         )
 
+
         return True
+
 
     except:
 
@@ -173,7 +225,17 @@ def download(url, path):
 
 
 
-def make_gif(video, output):
+
+# -------------------------
+# VIDEO -> GIF
+# -------------------------
+
+def convert_gif(video):
+
+    output = video.with_suffix(
+        ".gif"
+    )
+
 
     cmd = [
         "ffmpeg",
@@ -181,11 +243,12 @@ def make_gif(video, output):
         "-i",
         str(video),
         "-vf",
-        "fps=10,scale=480:-1:flags=lanczos",
+        "fps=10,scale=480:-1",
         "-loop",
         "0",
         str(output)
     ]
+
 
     result = subprocess.run(
         cmd,
@@ -193,21 +256,35 @@ def make_gif(video, output):
         stderr=subprocess.DEVNULL
     )
 
-    return (
-        result.returncode == 0
-        and output.exists()
-        and detect(output) == "gif"
-    )
+
+    if result.returncode == 0:
+
+        return output
+
+
+    return None
 
 
 
-def find_media(required, posted):
+
+# -------------------------
+# FIND MEDIA
+# -------------------------
+
+def find_media(
+    wanted,
+    used
+):
 
     subs = SUBREDDITS[:]
 
-    random.shuffle(subs)
+    random.shuffle(
+        subs
+    )
+
 
     for sub in subs:
+
 
         try:
 
@@ -216,33 +293,25 @@ def find_media(required, posted):
                 timeout=40
             ).json()
 
+
             posts = data.get(
                 "memes",
                 []
             )
+
 
         except:
 
             continue
 
 
-        random.shuffle(posts)
+
+        random.shuffle(
+            posts
+        )
 
 
         for post in posts:
-
-            post_id = (
-                post.get("postLink")
-                or post.get("url")
-            )
-
-
-            if not post_id:
-                continue
-
-
-            if post_id in posted:
-                continue
 
 
             url = post.get(
@@ -253,6 +322,7 @@ def find_media(required, posted):
 
             if not url:
                 continue
+
 
 
             temp = tempfile.NamedTemporaryFile(
@@ -267,6 +337,7 @@ def find_media(required, posted):
             )
 
 
+
             if not download(
                 url,
                 path
@@ -279,57 +350,74 @@ def find_media(required, posted):
                 continue
 
 
-            kind = detect(path)
+
+            media_hash = file_hash(
+                path
+            )
 
 
-            if required == "image":
+            if media_hash in used:
+
+                path.unlink(
+                    missing_ok=True
+                )
+
+                continue
+
+
+
+            kind = detect(
+                path
+            )
+
+
+
+            if wanted == "image":
 
                 if kind == "image":
 
                     return {
-                        "type": "image",
-                        "path": path,
-                        "subreddit": sub,
-                        "id": post_id
+                        "type":"image",
+                        "path":path,
+                        "hash":media_hash
                     }
 
 
 
-            if required == "gif":
+            if wanted == "gif":
+
 
                 if kind == "gif":
 
                     return {
-                        "type": "gif",
-                        "path": path,
-                        "subreddit": sub,
-                        "id": post_id
+                        "type":"gif",
+                        "path":path,
+                        "hash":media_hash
                     }
+
 
 
                 if kind == "video":
 
-                    gif = path.with_suffix(
-                        ".gif"
+
+                    gif = convert_gif(
+                        path
                     )
 
 
-                    if make_gif(
-                        path,
-                        gif
-                    ):
+                    path.unlink(
+                        missing_ok=True
+                    )
 
-                        path.unlink(
-                            missing_ok=True
-                        )
 
+                    if gif:
 
                         return {
-                            "type": "gif",
-                            "path": gif,
-                            "subreddit": sub,
-                            "id": post_id
+                            "type":"gif",
+                            "path":gif,
+                            "hash":media_hash
                         }
+
 
 
             path.unlink(
@@ -341,53 +429,67 @@ def find_media(required, posted):
 
 
 
+
+# -------------------------
+# TELEGRAM
+# -------------------------
+
 def send_telegram(item):
+
 
     if item["type"] == "image":
 
-        url = (
+        endpoint = (
             f"https://api.telegram.org/"
             f"bot{TOKEN}/sendPhoto"
         )
 
+
         files = {
-            "photo": (
+
+            "photo":
+            (
                 "image.jpg",
                 open(
                     item["path"],
                     "rb"
-                ),
-                "image/jpeg"
+                )
             )
+
         }
+
 
 
     else:
 
-        url = (
+        endpoint = (
             f"https://api.telegram.org/"
             f"bot{TOKEN}/sendAnimation"
         )
 
 
         files = {
-            "animation": (
+
+            "animation":
+            (
                 "animation.gif",
                 open(
                     item["path"],
                     "rb"
-                ),
-                "image/gif"
+                )
             )
+
         }
+
+
 
 
     try:
 
         r = session.post(
-            url,
+            endpoint,
             data={
-                "chat_id": CHAT_ID
+                "chat_id":CHAT_ID
             },
             files=files,
             timeout=180
@@ -413,20 +515,28 @@ def send_telegram(item):
 
 
 
+
+# -------------------------
+# MAIN
+# -------------------------
+
 def main():
 
     state = load_state()
 
 
-    required = needed_type(
+    wanted = required_type(
         state["index"]
     )
 
 
     media = find_media(
-        required,
+        wanted,
         set(
-            state["posted"]
+            state.get(
+                "hashes",
+                []
+            )
         )
     )
 
@@ -453,17 +563,17 @@ def main():
 
 
 
-    state["posted"].append(
-        media["id"]
+    state["hashes"].append(
+        media["hash"]
     )
 
 
     if len(
-        state["posted"]
-    ) > 1000:
+        state["hashes"]
+    ) > 5000:
 
-        state["posted"] = (
-            state["posted"][-1000:]
+        state["hashes"] = (
+            state["hashes"][-5000:]
         )
 
 
@@ -476,7 +586,8 @@ def main():
 
 
     print(
-        "POST SUCCESS"
+        "POST SUCCESS:",
+        wanted
     )
 
 
