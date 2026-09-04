@@ -22,6 +22,7 @@ SUBREDDITS = [
     "UnderOppai",
     "SideOppai",
     "DarkSkinnedAnimeBabes",
+    "AnimeLingerie",
 ]
 
 
