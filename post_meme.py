@@ -1,117 +1,879 @@
-name: Post Reddit Media
+#!/usr/bin/env python3
 
-on:
+import os
+import sys
+import json
+import random
+import hashlib
+import tempfile
+import subprocess
+from pathlib import Path
 
-  workflow_dispatch:
-
-  schedule:
-
-    - cron: "0 * * * *"
-
-
-permissions:
-
-  contents: write
+import requests
 
 
-concurrency:
+SUBREDDITS = [
+    "nsfwanimegifs",
+    "ecchi",
+    "OverOppai",
+    "CFNM_Hentai",
+    "EcchiCurves",
+    "animeplot",
+    "UnderOppai",
+    "SideOppai",
+    "DarkSkinnedAnimeBabes",
+    "AnimeLingerie",
+    "SFWWaifu"
+]
 
-  group: reddit-media-post
+API_URL = "https://meme-api.com/gimme/{}/50"
 
-  cancel-in-progress: false
-
-
-jobs:
-
-  post:
-
-    runs-on: ubuntu-latest
-
-    steps:
-
-      - name: Checkout repository
-
-        uses: actions/checkout@v4
-
-        with:
-
-          fetch-depth: 0
-
-          ref: main
+STATE_FILE = Path("posted.json")
 
 
-      - name: Setup Python
+TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN",
+    ""
+).strip()
 
-        uses: actions/setup-python@v5
-
-        with:
-
-          python-version: "3.11"
-
-
-      - name: Install FFmpeg
-
-        run: |
-
-          sudo apt-get update
-
-          sudo apt-get install -y ffmpeg
+CHAT_ID = os.environ.get(
+    "TELEGRAM_CHAT_ID",
+    ""
+).strip()
 
 
-      - name: Install dependencies
-
-        run: |
-
-          python -m pip install --upgrade pip
-
-          python -m pip install requests
+if not TOKEN or not CHAT_ID:
+    print("Missing Telegram secrets")
+    sys.exit(1)
 
 
-      - name: Run bot
+# ============================================================
+# HTTP SESSION
+# ============================================================
 
-        env:
+session = requests.Session()
 
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-
-        run: |
-
-          python -u post_meme.py
+session.headers.update({
+    "User-Agent": "RedditTelegramMediaBot/5.0"
+})
 
 
-      - name: Save posting history
+# ============================================================
+# STATE
+# ============================================================
 
-        if: success()
+def load_state():
 
-        run: |
+    default = {
+        "index": 0,
+        "hashes": []
+    }
 
-          git config user.name "github-actions[bot]"
+    if not STATE_FILE.exists():
+        return default
 
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+    try:
 
-          git add posted.json
+        data = json.loads(
+            STATE_FILE.read_text(
+                encoding="utf-8"
+            )
+        )
 
-          if git diff --cached --quiet; then
+        hashes = data.get(
+            "hashes",
+            []
+        )
 
-            echo "No changes"
+        if not hashes:
+            hashes = data.get(
+                "posted",
+                []
+            )
 
-            exit 0
+        return {
+            "index": int(
+                data.get(
+                    "index",
+                    0
+                )
+            ),
+            "hashes": hashes
+        }
 
-          fi
+    except Exception as e:
 
-          git commit -m "Update posting history"
+        print(
+            f"Could not read state file: {e}"
+        )
 
-          git fetch origin main
+        return default
 
-          git checkout main
 
-          git merge origin/main --no-edit || true
+def save_state(state):
 
-          git push origin main || (
+    STATE_FILE.write_text(
+        json.dumps(
+            state,
+            indent=2
+        ),
+        encoding="utf-8"
+    )
 
-            git pull origin main --no-edit
 
-            git push origin main
+# ============================================================
+# POST ORDER
+# image -> image -> gif
+# ============================================================
 
-          )
+def needed_type(index):
+
+    sequence = [
+        "image",
+        "image",
+        "gif"
+    ]
+
+    return sequence[
+        index % len(sequence)
+    ]
+
+
+# ============================================================
+# HASH
+# ============================================================
+
+def file_hash(path):
+
+    h = hashlib.sha256()
+
+    with open(
+        path,
+        "rb"
+    ) as f:
+
+        while True:
+
+            chunk = f.read(1024 * 1024)
+
+            if not chunk:
+                break
+
+            h.update(chunk)
+
+    return h.hexdigest()
+
+
+# ============================================================
+# DETECT FILE TYPE
+# ============================================================
+
+def detect(path):
+
+    try:
+
+        header = path.read_bytes()[:32]
+
+        if header.startswith(b"GIF"):
+            return "gif"
+
+        if header.startswith(b"\xff\xd8"):
+            return "image"
+
+        if header.startswith(b"\x89PNG"):
+            return "image"
+
+        if (
+            len(header) >= 12
+            and header[:4] == b"RIFF"
+            and header[8:12] == b"WEBP"
+        ):
+            return "image"
+
+    except Exception:
+
+        pass
+
+
+    ext = path.suffix.lower()
+
+
+    if ext in [
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".webp"
+    ]:
+        return "image"
+
+
+    if ext == ".gif":
+        return "gif"
+
+
+    if ext in [
+        ".mp4",
+        ".webm",
+        ".mov",
+        ".m4v"
+    ]:
+        return "video"
+
+
+    return "unknown"
+
+
+# ============================================================
+# DOWNLOAD
+# ============================================================
+
+def download(url, path):
+
+    try:
+
+        response = session.get(
+            url,
+            timeout=60
+        )
+
+        if response.status_code != 200:
+
+            print(
+                f"Download failed: HTTP {response.status_code}"
+            )
+
+            return False
+
+        if not response.content:
+
+            print(
+                "Download returned empty file"
+            )
+
+            return False
+
+        path.write_bytes(
+            response.content
+        )
+
+        return True
+
+    except Exception as e:
+
+        print(
+            f"Download error: {e}"
+        )
+
+        return False
+
+
+# ============================================================
+# VIDEO TO GIF
+# ============================================================
+
+def make_gif(video):
+
+    output = video.with_name(
+        video.stem + "_converted.gif"
+    )
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(video),
+        "-vf",
+        "fps=10,scale=480:-1:flags=lanczos",
+        "-loop",
+        "0",
+        str(output)
+    ]
+
+    try:
+
+        result = subprocess.run(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=180
+        )
+
+    except Exception as e:
+
+        print(
+            f"FFmpeg error: {e}"
+        )
+
+        return None
+
+
+    if (
+        result.returncode == 0
+        and output.exists()
+        and output.stat().st_size > 0
+    ):
+
+        return output
+
+
+    return None
+
+
+# ============================================================
+# FIND MEDIA
+# ============================================================
+
+def find_media(required, used):
+
+    subs = SUBREDDITS[:]
+
+    random.shuffle(subs)
+
+
+    for sub in subs:
+
+        print(
+            f"\nChecking r/{sub}..."
+        )
+
+        try:
+
+            response = session.get(
+                API_URL.format(sub),
+                timeout=40
+            )
+
+            if response.status_code != 200:
+
+                print(
+                    f"API error: HTTP {response.status_code}"
+                )
+
+                continue
+
+
+            data = response.json()
+
+            posts = data.get(
+                "memes",
+                []
+            )
+
+        except Exception as e:
+
+            print(
+                f"Could not get subreddit data: {e}"
+            )
+
+            continue
+
+
+        random.shuffle(posts)
+
+
+        for post in posts:
+
+            # ==================================================
+            # NSFW FILTER
+            # ==================================================
+            #
+            # ONLY allow posts where:
+            #
+            #     "nsfw": true
+            #
+            # Everything else is rejected.
+            #
+            # ==================================================
+
+            if post.get("nsfw") is not True:
+
+                print(
+                    "  SKIP: not marked NSFW"
+                )
+
+                continue
+
+
+            print(
+                "  NSFW: accepted"
+            )
+
+
+            # ==================================================
+            # GET MEDIA URL
+            # ==================================================
+
+            url = post.get(
+                "url",
+                ""
+            ).strip()
+
+
+            if not url:
+
+                print(
+                    "  SKIP: no media URL"
+                )
+
+                continue
+
+
+            # ==================================================
+            # CREATE TEMP FILE
+            # ==================================================
+
+            temp = tempfile.NamedTemporaryFile(
+                delete=False
+            )
+
+            temp.close()
+
+
+            path = Path(
+                temp.name
+            )
+
+
+            # ==================================================
+            # DOWNLOAD
+            # ==================================================
+
+            if not download(
+                url,
+                path
+            ):
+
+                path.unlink(
+                    missing_ok=True
+                )
+
+                continue
+
+
+            # ==================================================
+            # DETECT TYPE
+            # ==================================================
+
+            kind = detect(
+                path
+            )
+
+
+            print(
+                f"  Media type: {kind}"
+            )
+
+
+            # ==================================================
+            # IMAGE
+            # ==================================================
+
+            if required == "image":
+
+                if kind != "image":
+
+                    print(
+                        "  SKIP: not an image"
+                    )
+
+                    path.unlink(
+                        missing_ok=True
+                    )
+
+                    continue
+
+
+                h = file_hash(
+                    path
+                )
+
+
+                if h in used:
+
+                    print(
+                        "  SKIP: duplicate image"
+                    )
+
+                    path.unlink(
+                        missing_ok=True
+                    )
+
+                    continue
+
+
+                return {
+                    "type": "image",
+                    "path": path,
+                    "hash": h
+                }
+
+
+            # ==================================================
+            # GIF
+            # ==================================================
+
+            if required == "gif":
+
+                # ----------------------------------------------
+                # Already a GIF
+                # ----------------------------------------------
+
+                if kind == "gif":
+
+                    h = file_hash(
+                        path
+                    )
+
+
+                    if h in used:
+
+                        print(
+                            "  SKIP: duplicate GIF"
+                        )
+
+                        path.unlink(
+                            missing_ok=True
+                        )
+
+                        continue
+
+
+                    return {
+                        "type": "gif",
+                        "path": path,
+                        "hash": h
+                    }
+
+
+                # ----------------------------------------------
+                # Video -> GIF
+                # ----------------------------------------------
+
+                if kind == "video":
+
+                    print(
+                        "  Converting video to GIF..."
+                    )
+
+
+                    gif = make_gif(
+                        path
+                    )
+
+
+                    path.unlink(
+                        missing_ok=True
+                    )
+
+
+                    if not gif:
+
+                        print(
+                            "  SKIP: GIF conversion failed"
+                        )
+
+                        continue
+
+
+                    # Hash the final GIF
+                    h = file_hash(
+                        gif
+                    )
+
+
+                    if h in used:
+
+                        print(
+                            "  SKIP: duplicate converted GIF"
+                        )
+
+                        gif.unlink(
+                            missing_ok=True
+                        )
+
+                        continue
+
+
+                    return {
+                        "type": "gif",
+                        "path": gif,
+                        "hash": h
+                    }
+
+
+                # ----------------------------------------------
+                # Unsupported media
+                # ----------------------------------------------
+
+                print(
+                    "  SKIP: cannot use for GIF"
+                )
+
+                path.unlink(
+                    missing_ok=True
+                )
+
+                continue
+
+
+            path.unlink(
+                missing_ok=True
+            )
+
+
+    return None
+
+
+# ============================================================
+# TELEGRAM
+# ============================================================
+
+def send_telegram(item):
+
+    file_handle = None
+
+
+    try:
+
+        if item["type"] == "image":
+
+            url = (
+                f"https://api.telegram.org/"
+                f"bot{TOKEN}/sendPhoto"
+            )
+
+
+            file_handle = open(
+                item["path"],
+                "rb"
+            )
+
+
+            files = {
+                "photo": (
+                    "image.jpg",
+                    file_handle,
+                    "image/jpeg"
+                )
+            }
+
+
+        else:
+
+            url = (
+                f"https://api.telegram.org/"
+                f"bot{TOKEN}/sendAnimation"
+            )
+
+
+            file_handle = open(
+                item["path"],
+                "rb"
+            )
+
+
+            files = {
+                "animation": (
+                    "animation.gif",
+                    file_handle,
+                    "image/gif"
+                )
+            }
+
+
+        response = session.post(
+            url,
+            data={
+                "chat_id": CHAT_ID
+            },
+            files=files,
+            timeout=180
+        )
+
+
+        try:
+
+            result = response.json()
+
+        except Exception:
+
+            result = {}
+
+
+        if not result.get(
+            "ok",
+            False
+        ):
+
+            print(
+                "Telegram API error:",
+                result
+            )
+
+            return False
+
+
+        return True
+
+
+    except Exception as e:
+
+        print(
+            f"Telegram error: {e}"
+        )
+
+        return False
+
+
+    finally:
+
+        if file_handle is not None:
+
+            file_handle.close()
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    state = load_state()
+
+
+    required = needed_type(
+        state["index"]
+    )
+
+
+    print(
+        "=========================================="
+    )
+
+    print(
+        "Reddit -> Telegram Bot"
+    )
+
+    print(
+        "=========================================="
+    )
+
+    print(
+        f"Post number: {state['index'] + 1}"
+    )
+
+    print(
+        f"Required type: {required}"
+    )
+
+    print(
+        "NSFW filter: ENABLED"
+    )
+
+    print(
+        "=========================================="
+    )
+
+
+    media = find_media(
+        required,
+        set(
+            state["hashes"]
+        )
+    )
+
+
+    if not media:
+
+        print(
+            "\nNo suitable NSFW media found."
+        )
+
+        return 1
+
+
+    print(
+        f"\nSending {media['type']} to Telegram..."
+    )
+
+
+    if not send_telegram(
+        media
+    ):
+
+        print(
+            "Telegram upload failed."
+        )
+
+        media["path"].unlink(
+            missing_ok=True
+        )
+
+        return 1
+
+
+    # =========================================================
+    # SAVE HISTORY ONLY AFTER SUCCESSFUL POST
+    # =========================================================
+
+    state["hashes"].append(
+        media["hash"]
+    )
+
+
+    if len(
+        state["hashes"]
+    ) > 5000:
+
+        state["hashes"] = (
+            state["hashes"][-5000:]
+        )
+
+
+    state["index"] += 1
+
+
+    save_state(
+        state
+    )
+
+
+    # Delete temporary media
+    media["path"].unlink(
+        missing_ok=True
+    )
+
+
+    print(
+        "\n=========================================="
+    )
+
+    print(
+        "POST SUCCESS"
+    )
+
+    print(
+        f"Type: {media['type']}"
+    )
+
+    print(
+        "NSFW: true"
+    )
+
+    print(
+        "=========================================="
+    )
+
+
+    return 0
+
+
+# ============================================================
+# RUN
+# ============================================================
+
+if __name__ == "__main__":
+
+    sys.exit(
+        main()
+    )
