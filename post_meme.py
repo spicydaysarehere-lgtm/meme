@@ -10,7 +10,12 @@ import subprocess
 from pathlib import Path
 
 import requests
+from PIL import Image
 
+
+# ============================================================
+# CONFIG
+# ============================================================
 
 SUBREDDITS = [
     "nsfwanimegifs",
@@ -26,6 +31,7 @@ SUBREDDITS = [
     "SFWWaifu"
 ]
 
+
 API_URL = "https://meme-api.com/gimme/{}/50"
 
 STATE_FILE = Path("posted.json")
@@ -35,6 +41,7 @@ TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     ""
 ).strip()
+
 
 CHAT_ID = os.environ.get(
     "TELEGRAM_CHAT_ID",
@@ -47,15 +54,17 @@ if not TOKEN or not CHAT_ID:
     sys.exit(1)
 
 
+
 # ============================================================
-# HTTP SESSION
+# SESSION
 # ============================================================
 
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "RedditTelegramMediaBot/5.0"
+    "User-Agent": "RedditTelegramMediaBot/6.0"
 })
+
 
 
 # ============================================================
@@ -69,8 +78,11 @@ def load_state():
         "hashes": []
     }
 
+
     if not STATE_FILE.exists():
+
         return default
+
 
     try:
 
@@ -80,50 +92,47 @@ def load_state():
             )
         )
 
-        hashes = data.get(
-            "hashes",
-            []
-        )
-
-        if not hashes:
-            hashes = data.get(
-                "posted",
-                []
-            )
 
         return {
+
             "index": int(
                 data.get(
                     "index",
                     0
                 )
             ),
-            "hashes": hashes
+
+            "hashes": data.get(
+                "hashes",
+                []
+            )
+
         }
 
-    except Exception as e:
 
-        print(
-            f"Could not read state file: {e}"
-        )
+    except Exception:
 
         return default
+
 
 
 def save_state(state):
 
     STATE_FILE.write_text(
+
         json.dumps(
             state,
             indent=2
         ),
+
         encoding="utf-8"
+
     )
+
 
 
 # ============================================================
 # POST ORDER
-# image -> image -> gif
 # ============================================================
 
 def needed_type(index):
@@ -134,9 +143,11 @@ def needed_type(index):
         "gif"
     ]
 
+
     return sequence[
-        index % len(sequence)
+        index % 3
     ]
+
 
 
 # ============================================================
@@ -147,25 +158,37 @@ def file_hash(path):
 
     h = hashlib.sha256()
 
+
     with open(
         path,
         "rb"
     ) as f:
 
+
         while True:
 
-            chunk = f.read(1024 * 1024)
 
-            if not chunk:
+            data = f.read(
+                1024 * 1024
+            )
+
+
+            if not data:
+
                 break
 
-            h.update(chunk)
+
+            h.update(
+                data
+            )
+
 
     return h.hexdigest()
 
 
+
 # ============================================================
-# DETECT FILE TYPE
+# DETECT TYPE
 # ============================================================
 
 def detect(path):
@@ -174,25 +197,32 @@ def detect(path):
 
         header = path.read_bytes()[:32]
 
-        if header.startswith(b"GIF"):
+
+        if header.startswith(
+            b"GIF"
+        ):
+
             return "gif"
 
-        if header.startswith(b"\xff\xd8"):
-            return "image"
 
-        if header.startswith(b"\x89PNG"):
-            return "image"
-
-        if (
-            len(header) >= 12
-            and header[:4] == b"RIFF"
-            and header[8:12] == b"WEBP"
+        if header.startswith(
+            b"\xff\xd8"
         ):
+
             return "image"
+
+
+        if header.startswith(
+            b"\x89PNG"
+        ):
+
+            return "image"
+
 
     except Exception:
 
         pass
+
 
 
     ext = path.suffix.lower()
@@ -204,11 +234,15 @@ def detect(path):
         ".png",
         ".webp"
     ]:
+
         return "image"
 
 
+
     if ext == ".gif":
+
         return "gif"
+
 
 
     if ext in [
@@ -217,10 +251,13 @@ def detect(path):
         ".mov",
         ".m4v"
     ]:
+
         return "video"
 
 
+
     return "unknown"
+
 
 
 # ============================================================
@@ -231,40 +268,31 @@ def download(url, path):
 
     try:
 
-        response = session.get(
+        r = session.get(
             url,
             timeout=60
         )
 
-        if response.status_code != 200:
 
-            print(
-                f"Download failed: HTTP {response.status_code}"
-            )
+        if r.status_code != 200:
 
             return False
 
-        if not response.content:
 
-            print(
-                "Download returned empty file"
-            )
-
-            return False
 
         path.write_bytes(
-            response.content
+            r.content
         )
+
 
         return True
 
-    except Exception as e:
 
-        print(
-            f"Download error: {e}"
-        )
+
+    except Exception:
 
         return False
+
 
 
 # ============================================================
@@ -273,607 +301,135 @@ def download(url, path):
 
 def make_gif(video):
 
-    output = video.with_name(
-        video.stem + "_converted.gif"
+    output = video.with_suffix(
+        ".gif"
     )
 
+
     cmd = [
+
         "ffmpeg",
         "-y",
         "-i",
         str(video),
         "-vf",
-        "fps=10,scale=480:-1:flags=lanczos",
+        "fps=10,scale=480:-1",
         "-loop",
         "0",
         str(output)
+
     ]
 
-    try:
 
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=180
-        )
+    result = subprocess.run(
 
-    except Exception as e:
+        cmd,
 
-        print(
-            f"FFmpeg error: {e}"
-        )
+        stdout=subprocess.DEVNULL,
 
-        return None
+        stderr=subprocess.DEVNULL
+
+    )
 
 
     if (
+
         result.returncode == 0
+
         and output.exists()
-        and output.stat().st_size > 0
+
     ):
 
         return output
 
 
-    return None
-
-
-# ============================================================
-# FIND MEDIA
-# ============================================================
-
-def find_media(required, used):
-
-    subs = SUBREDDITS[:]
-
-    random.shuffle(subs)
-
-
-    for sub in subs:
-
-        print(
-            f"\nChecking r/{sub}..."
-        )
-
-        try:
-
-            response = session.get(
-                API_URL.format(sub),
-                timeout=40
-            )
-
-            if response.status_code != 200:
-
-                print(
-                    f"API error: HTTP {response.status_code}"
-                )
-
-                continue
-
-
-            data = response.json()
-
-            posts = data.get(
-                "memes",
-                []
-            )
-
-        except Exception as e:
-
-            print(
-                f"Could not get subreddit data: {e}"
-            )
-
-            continue
-
-
-        random.shuffle(posts)
-
-
-        for post in posts:
-
-            # ==================================================
-            # NSFW FILTER
-            # ==================================================
-            #
-            # ONLY allow posts where:
-            #
-            #     "nsfw": true
-            #
-            # Everything else is rejected.
-            #
-            # ==================================================
-
-            if post.get("nsfw") is not True:
-
-                print(
-                    "  SKIP: not marked NSFW"
-                )
-
-                continue
-
-
-            print(
-                "  NSFW: accepted"
-            )
-
-
-            # ==================================================
-            # GET MEDIA URL
-            # ==================================================
-
-            url = post.get(
-                "url",
-                ""
-            ).strip()
-
-
-            if not url:
-
-                print(
-                    "  SKIP: no media URL"
-                )
-
-                continue
-
-
-            # ==================================================
-            # CREATE TEMP FILE
-            # ==================================================
-
-            temp = tempfile.NamedTemporaryFile(
-                delete=False
-            )
-
-            temp.close()
-
-
-            path = Path(
-                temp.name
-            )
-
-
-            # ==================================================
-            # DOWNLOAD
-            # ==================================================
-
-            if not download(
-                url,
-                path
-            ):
-
-                path.unlink(
-                    missing_ok=True
-                )
-
-                continue
-
-
-            # ==================================================
-            # DETECT TYPE
-            # ==================================================
-
-            kind = detect(
-                path
-            )
-
-
-            print(
-                f"  Media type: {kind}"
-            )
-
-
-            # ==================================================
-            # IMAGE
-            # ==================================================
-
-            if required == "image":
-
-                if kind != "image":
-
-                    print(
-                        "  SKIP: not an image"
-                    )
-
-                    path.unlink(
-                        missing_ok=True
-                    )
-
-                    continue
-
-
-                h = file_hash(
-                    path
-                )
-
-
-                if h in used:
-
-                    print(
-                        "  SKIP: duplicate image"
-                    )
-
-                    path.unlink(
-                        missing_ok=True
-                    )
-
-                    continue
-
-
-                return {
-                    "type": "image",
-                    "path": path,
-                    "hash": h
-                }
-
-
-            # ==================================================
-            # GIF
-            # ==================================================
-
-            if required == "gif":
-
-                # ----------------------------------------------
-                # Already a GIF
-                # ----------------------------------------------
-
-                if kind == "gif":
-
-                    h = file_hash(
-                        path
-                    )
-
-
-                    if h in used:
-
-                        print(
-                            "  SKIP: duplicate GIF"
-                        )
-
-                        path.unlink(
-                            missing_ok=True
-                        )
-
-                        continue
-
-
-                    return {
-                        "type": "gif",
-                        "path": path,
-                        "hash": h
-                    }
-
-
-                # ----------------------------------------------
-                # Video -> GIF
-                # ----------------------------------------------
-
-                if kind == "video":
-
-                    print(
-                        "  Converting video to GIF..."
-                    )
-
-
-                    gif = make_gif(
-                        path
-                    )
-
-
-                    path.unlink(
-                        missing_ok=True
-                    )
-
-
-                    if not gif:
-
-                        print(
-                            "  SKIP: GIF conversion failed"
-                        )
-
-                        continue
-
-
-                    # Hash the final GIF
-                    h = file_hash(
-                        gif
-                    )
-
-
-                    if h in used:
-
-                        print(
-                            "  SKIP: duplicate converted GIF"
-                        )
-
-                        gif.unlink(
-                            missing_ok=True
-                        )
-
-                        continue
-
-
-                    return {
-                        "type": "gif",
-                        "path": gif,
-                        "hash": h
-                    }
-
-
-                # ----------------------------------------------
-                # Unsupported media
-                # ----------------------------------------------
-
-                print(
-                    "  SKIP: cannot use for GIF"
-                )
-
-                path.unlink(
-                    missing_ok=True
-                )
-
-                continue
-
-
-            path.unlink(
-                missing_ok=True
-            )
-
 
     return None
 
 
+
 # ============================================================
-# TELEGRAM
+# IMAGE COMPRESSION
 # ============================================================
 
-def send_telegram(item):
-
-    file_handle = None
-
+def compress_image(path):
 
     try:
 
-        if item["type"] == "image":
-
-            url = (
-                f"https://api.telegram.org/"
-                f"bot{TOKEN}/sendPhoto"
-            )
-
-
-            file_handle = open(
-                item["path"],
-                "rb"
-            )
-
-
-            files = {
-                "photo": (
-                    "image.jpg",
-                    file_handle,
-                    "image/jpeg"
-                )
-            }
-
-
-        else:
-
-            url = (
-                f"https://api.telegram.org/"
-                f"bot{TOKEN}/sendAnimation"
-            )
-
-
-            file_handle = open(
-                item["path"],
-                "rb"
-            )
-
-
-            files = {
-                "animation": (
-                    "animation.gif",
-                    file_handle,
-                    "image/gif"
-                )
-            }
-
-
-        response = session.post(
-            url,
-            data={
-                "chat_id": CHAT_ID
-            },
-            files=files,
-            timeout=180
+        img = Image.open(
+            path
         )
 
 
-        try:
-
-            result = response.json()
-
-        except Exception:
-
-            result = {}
-
-
-        if not result.get(
-            "ok",
-            False
+        if img.mode in (
+            "RGBA",
+            "P"
         ):
 
-            print(
-                "Telegram API error:",
-                result
+            img = img.convert(
+                "RGB"
             )
 
-            return False
 
 
-        return True
+        img.thumbnail(
+            (
+                2000,
+                2000
+            )
+        )
+
+
+        output = path.with_name(
+            path.stem + "_compressed.jpg"
+        )
+
+
+        quality = 85
+
+
+
+        while True:
+
+
+            img.save(
+
+                output,
+
+                "JPEG",
+
+                quality=quality,
+
+                optimize=True
+
+            )
+
+
+            if output.stat().st_size < 9000000:
+
+                break
+
+
+
+            quality -= 10
+
+
+
+            if quality <= 30:
+
+                break
+
+
+
+        return output
+
 
 
     except Exception as e:
 
         print(
-            f"Telegram error: {e}"
+            "Compression error:",
+            e
         )
 
-        return False
-
-
-    finally:
-
-        if file_handle is not None:
-
-            file_handle.close()
-
-
-# ============================================================
-# MAIN
-# ============================================================
-
-def main():
-
-    state = load_state()
-
-
-    required = needed_type(
-        state["index"]
-    )
-
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        "Reddit -> Telegram Bot"
-    )
-
-    print(
-        "=========================================="
-    )
-
-    print(
-        f"Post number: {state['index'] + 1}"
-    )
-
-    print(
-        f"Required type: {required}"
-    )
-
-    print(
-        "NSFW filter: ENABLED"
-    )
-
-    print(
-        "=========================================="
-    )
-
-
-    media = find_media(
-        required,
-        set(
-            state["hashes"]
-        )
-    )
-
-
-    if not media:
-
-        print(
-            "\nNo suitable NSFW media found."
-        )
-
-        return 1
-
-
-    print(
-        f"\nSending {media['type']} to Telegram..."
-    )
-
-
-    if not send_telegram(
-        media
-    ):
-
-        print(
-            "Telegram upload failed."
-        )
-
-        media["path"].unlink(
-            missing_ok=True
-        )
-
-        return 1
-
-
-    # =========================================================
-    # SAVE HISTORY ONLY AFTER SUCCESSFUL POST
-    # =========================================================
-
-    state["hashes"].append(
-        media["hash"]
-    )
-
-
-    if len(
-        state["hashes"]
-    ) > 5000:
-
-        state["hashes"] = (
-            state["hashes"][-5000:]
-        )
-
-
-    state["index"] += 1
-
-
-    save_state(
-        state
-    )
-
-
-    # Delete temporary media
-    media["path"].unlink(
-        missing_ok=True
-    )
-
-
-    print(
-        "\n=========================================="
-    )
-
-    print(
-        "POST SUCCESS"
-    )
-
-    print(
-        f"Type: {media['type']}"
-    )
-
-    print(
-        "NSFW: true"
-    )
-
-    print(
-        "=========================================="
-    )
-
-
-    return 0
-
-
-# ============================================================
-# RUN
-# ============================================================
-
-if __name__ == "__main__":
-
-    sys.exit(
-        main()
-    )
+        return path
