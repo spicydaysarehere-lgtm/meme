@@ -14,7 +14,7 @@ from PIL import Image
 
 
 # ============================================================
-# CONFIG
+# CONFIGURATION
 # ============================================================
 
 SUBREDDITS = [
@@ -49,8 +49,11 @@ CHAT_ID = os.environ.get(
 ).strip()
 
 
+
 if not TOKEN or not CHAT_ID:
+
     print("Missing Telegram secrets")
+
     sys.exit(1)
 
 
@@ -62,7 +65,10 @@ if not TOKEN or not CHAT_ID:
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "RedditTelegramMediaBot/6.0"
+
+    "User-Agent":
+    "RedditTelegramMediaBot/7.0"
+
 })
 
 
@@ -74,8 +80,11 @@ session.headers.update({
 def load_state():
 
     default = {
+
         "index": 0,
+
         "hashes": []
+
     }
 
 
@@ -87,25 +96,21 @@ def load_state():
     try:
 
         data = json.loads(
+
             STATE_FILE.read_text(
                 encoding="utf-8"
             )
+
         )
 
 
         return {
 
-            "index": int(
-                data.get(
-                    "index",
-                    0
-                )
-            ),
+            "index":
+                int(data.get("index", 0)),
 
-            "hashes": data.get(
-                "hashes",
-                []
-            )
+            "hashes":
+                data.get("hashes", [])
 
         }
 
@@ -113,6 +118,7 @@ def load_state():
     except Exception:
 
         return default
+
 
 
 
@@ -132,19 +138,23 @@ def save_state(state):
 
 
 # ============================================================
-# POST ORDER
+# MEDIA ORDER
 # ============================================================
 
 def needed_type(index):
 
-    sequence = [
+    order = [
+
         "image",
+
         "image",
+
         "gif"
+
     ]
 
 
-    return sequence[
+    return order[
         index % 3
     ]
 
@@ -168,19 +178,17 @@ def file_hash(path):
         while True:
 
 
-            data = f.read(
+            chunk = f.read(
                 1024 * 1024
             )
 
 
-            if not data:
+            if not chunk:
 
                 break
 
 
-            h.update(
-                data
-            )
+            h.update(chunk)
 
 
     return h.hexdigest()
@@ -205,6 +213,7 @@ def detect(path):
             return "gif"
 
 
+
         if header.startswith(
             b"\xff\xd8"
         ):
@@ -212,11 +221,13 @@ def detect(path):
             return "image"
 
 
+
         if header.startswith(
             b"\x89PNG"
         ):
 
             return "image"
+
 
 
     except Exception:
@@ -229,10 +240,15 @@ def detect(path):
 
 
     if ext in [
+
         ".jpg",
+
         ".jpeg",
+
         ".png",
+
         ".webp"
+
     ]:
 
         return "image"
@@ -246,10 +262,15 @@ def detect(path):
 
 
     if ext in [
+
         ".mp4",
+
         ".webm",
+
         ".mov",
+
         ".m4v"
+
     ]:
 
         return "video"
@@ -269,8 +290,11 @@ def download(url, path):
     try:
 
         r = session.get(
+
             url,
+
             timeout=60
+
         )
 
 
@@ -281,155 +305,15 @@ def download(url, path):
 
 
         path.write_bytes(
+
             r.content
+
         )
 
 
         return True
 
 
-
     except Exception:
 
         return False
-
-
-
-# ============================================================
-# VIDEO TO GIF
-# ============================================================
-
-def make_gif(video):
-
-    output = video.with_suffix(
-        ".gif"
-    )
-
-
-    cmd = [
-
-        "ffmpeg",
-        "-y",
-        "-i",
-        str(video),
-        "-vf",
-        "fps=10,scale=480:-1",
-        "-loop",
-        "0",
-        str(output)
-
-    ]
-
-
-    result = subprocess.run(
-
-        cmd,
-
-        stdout=subprocess.DEVNULL,
-
-        stderr=subprocess.DEVNULL
-
-    )
-
-
-    if (
-
-        result.returncode == 0
-
-        and output.exists()
-
-    ):
-
-        return output
-
-
-
-    return None
-
-
-
-# ============================================================
-# IMAGE COMPRESSION
-# ============================================================
-
-def compress_image(path):
-
-    try:
-
-        img = Image.open(
-            path
-        )
-
-
-        if img.mode in (
-            "RGBA",
-            "P"
-        ):
-
-            img = img.convert(
-                "RGB"
-            )
-
-
-
-        img.thumbnail(
-            (
-                2000,
-                2000
-            )
-        )
-
-
-        output = path.with_name(
-            path.stem + "_compressed.jpg"
-        )
-
-
-        quality = 85
-
-
-
-        while True:
-
-
-            img.save(
-
-                output,
-
-                "JPEG",
-
-                quality=quality,
-
-                optimize=True
-
-            )
-
-
-            if output.stat().st_size < 9000000:
-
-                break
-
-
-
-            quality -= 10
-
-
-
-            if quality <= 30:
-
-                break
-
-
-
-        return output
-
-
-
-    except Exception as e:
-
-        print(
-            "Compression error:",
-            e
-        )
-
-        return path
