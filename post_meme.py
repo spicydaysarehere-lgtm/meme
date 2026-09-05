@@ -26,6 +26,7 @@ SUBREDDITS = [
     "animeplot",
     "animegifs",
     "UnderOppai",
+    "WaifuPolls",
     "SideOppai",
     "DarkSkinnedAnimeBabes",
     "AnimeLingerie",
