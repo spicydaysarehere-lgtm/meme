@@ -1,3 +1,4 @@
+```python
 #!/usr/bin/env python3
 
 import os
@@ -11,6 +12,10 @@ from pathlib import Path
 
 import requests
 
+
+# ============================================================
+# 1. SUBREDDITS
+# ============================================================
 
 SUBREDDITS = [
     "nsfwanimegifs",
@@ -26,6 +31,10 @@ SUBREDDITS = [
     "SFWWaifu"
 ]
 
+
+# ============================================================
+# 2. CONFIGURATION
+# ============================================================
 
 API_URL = "https://meme-api.com/gimme/{}/50"
 
@@ -48,19 +57,21 @@ if not TOKEN or not CHAT_ID:
     sys.exit(1)
 
 
+# ============================================================
+# 3. HTTP SESSION
+# ============================================================
 
 session = requests.Session()
 
 session.headers.update(
     {
-        "User-Agent": "RedditTelegramMediaBot/4.0"
+        "User-Agent": "RedditTelegramMediaBot/5.0"
     }
 )
 
 
-
 # ============================================================
-# STATE
+# 4. STATE
 # ============================================================
 
 def load_state():
@@ -70,10 +81,8 @@ def load_state():
         "hashes": []
     }
 
-
     if not STATE_FILE.exists():
         return default
-
 
     try:
 
@@ -83,19 +92,16 @@ def load_state():
             )
         )
 
-
         old_hashes = data.get(
             "hashes",
             []
         )
-
 
         if not old_hashes:
             old_hashes = data.get(
                 "posted",
                 []
             )
-
 
         return {
             "index": int(
@@ -107,11 +113,9 @@ def load_state():
             "hashes": old_hashes
         }
 
-
-    except:
+    except Exception:
 
         return default
-
 
 
 def save_state(state):
@@ -125,9 +129,8 @@ def save_state(state):
     )
 
 
-
 # ============================================================
-# POST ORDER
+# 5. POST ORDER
 # ============================================================
 
 def needed_type(index):
@@ -143,9 +146,8 @@ def needed_type(index):
     ]
 
 
-
 # ============================================================
-# HASH
+# 6. HASH
 # ============================================================
 
 def file_hash(path):
@@ -166,13 +168,11 @@ def file_hash(path):
 
             h.update(chunk)
 
-
     return h.hexdigest()
 
 
-
 # ============================================================
-# DETECT FILE TYPE
+# 7. DETECT FILE TYPE
 # ============================================================
 
 def detect(path):
@@ -181,24 +181,35 @@ def detect(path):
 
         header = path.read_bytes()[:32]
 
-
+        # GIF
         if header.startswith(
             b"GIF"
         ):
             return "gif"
 
-
-        if (
-            header.startswith(b"\xff\xd8")
-            or header.startswith(b"\x89PNG")
+        # JPEG
+        if header.startswith(
+            b"\xff\xd8"
         ):
             return "image"
 
+        # PNG
+        if header.startswith(
+            b"\x89PNG"
+        ):
+            return "image"
 
-    except:
+        # WEBP
+        if (
+            len(header) >= 12
+            and header[:4] == b"RIFF"
+            and header[8:12] == b"WEBP"
+        ):
+            return "image"
+
+    except Exception:
 
         pass
-
 
 
     ext = path.suffix.lower()
@@ -229,9 +240,8 @@ def detect(path):
     return "unknown"
 
 
-
 # ============================================================
-# DOWNLOAD
+# 8. DOWNLOAD
 # ============================================================
 
 def download(url, path):
@@ -243,27 +253,22 @@ def download(url, path):
             timeout=60
         )
 
-
         if r.status_code != 200:
             return False
-
 
         path.write_bytes(
             r.content
         )
 
-
         return True
 
-
-    except:
+    except Exception:
 
         return False
 
 
-
 # ============================================================
-# VIDEO TO GIF
+# 9. VIDEO TO GIF
 # ============================================================
 
 def make_gif(video):
@@ -271,7 +276,6 @@ def make_gif(video):
     output = video.with_suffix(
         ".gif"
     )
-
 
     cmd = [
         "ffmpeg",
@@ -285,25 +289,23 @@ def make_gif(video):
         str(output)
     ]
 
-
     result = subprocess.run(
         cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL
     )
 
-
-    if result.returncode == 0 and output.exists():
-
+    if (
+        result.returncode == 0
+        and output.exists()
+    ):
         return output
-
 
     return None
 
 
-
 # ============================================================
-# FIND MEDIA
+# 10. FIND MEDIA
 # ============================================================
 
 def find_media(required, used):
@@ -317,25 +319,40 @@ def find_media(required, used):
 
     for sub in subs:
 
+        print(
+            f"Checking r/{sub}..."
+        )
 
         try:
 
-            data = session.get(
+            response = session.get(
                 API_URL.format(sub),
                 timeout=40
-            ).json()
+            )
 
+            if response.status_code != 200:
+
+                print(
+                    f"  API returned HTTP {response.status_code}"
+                )
+
+                continue
+
+
+            data = response.json()
 
             posts = data.get(
                 "memes",
                 []
             )
 
+        except Exception as e:
 
-        except:
+            print(
+                f"  Failed to get posts: {e}"
+            )
 
             continue
-
 
 
         random.shuffle(
@@ -343,20 +360,56 @@ def find_media(required, used):
         )
 
 
-
         for post in posts:
 
+            # ==================================================
+            # NSFW FILTER
+            # ==================================================
+            #
+            # ONLY allow posts explicitly marked NSFW.
+            #
+            # True  = allowed
+            # False = rejected
+            # Missing field = rejected
+            #
+            # ==================================================
+
+            is_nsfw = post.get(
+                "nsfw",
+                False
+            )
+
+            if is_nsfw is not True:
+
+                print(
+                    "  Skipping non-NSFW post"
+                )
+
+                continue
+
+
+            print(
+                "  NSFW post accepted"
+            )
+
+
+            # ==================================================
+            # GET URL
+            # ==================================================
 
             url = post.get(
                 "url",
                 ""
             )
 
-
             if not url:
+
                 continue
 
 
+            # ==================================================
+            # DOWNLOAD
+            # ==================================================
 
             temp = tempfile.NamedTemporaryFile(
                 delete=False
@@ -368,7 +421,6 @@ def find_media(required, used):
             path = Path(
                 temp.name
             )
-
 
 
             if not download(
@@ -383,6 +435,9 @@ def find_media(required, used):
                 continue
 
 
+            # ==================================================
+            # HASH
+            # ==================================================
 
             h = file_hash(
                 path
@@ -391,6 +446,10 @@ def find_media(required, used):
 
             if h in used:
 
+                print(
+                    "  Skipping duplicate"
+                )
+
                 path.unlink(
                     missing_ok=True
                 )
@@ -398,12 +457,23 @@ def find_media(required, used):
                 continue
 
 
+            # ==================================================
+            # DETECT TYPE
+            # ==================================================
 
             kind = detect(
                 path
             )
 
 
+            print(
+                f"  Detected media type: {kind}"
+            )
+
+
+            # ==================================================
+            # IMAGE
+            # ==================================================
 
             if required == "image":
 
@@ -416,10 +486,13 @@ def find_media(required, used):
                     }
 
 
+            # ==================================================
+            # GIF
+            # ==================================================
 
             if required == "gif":
 
-
+                # Already a GIF
                 if kind == "gif":
 
                     return {
@@ -429,7 +502,7 @@ def find_media(required, used):
                     }
 
 
-
+                # Video -> GIF
                 if kind == "video":
 
                     gif = make_gif(
@@ -451,6 +524,9 @@ def find_media(required, used):
                         }
 
 
+            # ==================================================
+            # NOT USABLE
+            # ==================================================
 
             path.unlink(
                 missing_ok=True
@@ -460,13 +536,11 @@ def find_media(required, used):
     return None
 
 
-
 # ============================================================
-# TELEGRAM
+# 11. TELEGRAM
 # ============================================================
 
 def send_telegram(item):
-
 
     if item["type"] == "image":
 
@@ -476,21 +550,21 @@ def send_telegram(item):
         )
 
 
-        files = {
+        file_handle = open(
+            item["path"],
+            "rb"
+        )
 
+
+        files = {
             "photo": (
                 "image.jpg",
-                open(
-                    item["path"],
-                    "rb"
-                )
+                file_handle
             )
-
         }
 
 
     else:
-
 
         url = (
             f"https://api.telegram.org/"
@@ -498,18 +572,18 @@ def send_telegram(item):
         )
 
 
-        files = {
+        file_handle = open(
+            item["path"],
+            "rb"
+        )
 
+
+        files = {
             "animation": (
                 "animation.gif",
-                open(
-                    item["path"],
-                    "rb"
-                )
+                file_handle
             )
-
         }
-
 
 
     try:
@@ -524,27 +598,48 @@ def send_telegram(item):
         )
 
 
-        return r.json().get(
+        try:
+
+            result = r.json()
+
+        except Exception:
+
+            result = {}
+
+
+        if not result.get(
             "ok",
             False
+        ):
+
+            print(
+                "Telegram error:",
+                result
+            )
+
+            return False
+
+
+        return True
+
+
+    except Exception as e:
+
+        print(
+            "Telegram request failed:",
+            e
         )
-
-
-    except:
 
         return False
 
 
     finally:
 
-        for f in files.values():
-
-            f[1].close()
-
+        file_handle.close()
 
 
 # ============================================================
-# MAIN
+# 12. MAIN
 # ============================================================
 
 def main():
@@ -554,6 +649,16 @@ def main():
 
     required = needed_type(
         state["index"]
+    )
+
+
+    print(
+        "Required media type:",
+        required
+    )
+
+    print(
+        "NSFW filter: ENABLED"
     )
 
 
@@ -568,11 +673,15 @@ def main():
     if not media:
 
         print(
-            "No media found"
+            "No suitable NSFW media found"
         )
 
         return 1
 
+
+    print(
+        "Sending NSFW media to Telegram..."
+    )
 
 
     if not send_telegram(
@@ -583,9 +692,16 @@ def main():
             "Telegram failed"
         )
 
+        media["path"].unlink(
+            missing_ok=True
+        )
+
         return 1
 
 
+    # ==========================================================
+    # SUCCESS
+    # ==========================================================
 
     state["hashes"].append(
         media["hash"]
@@ -609,18 +725,29 @@ def main():
     )
 
 
+    # Remove downloaded file after successful upload
+    media["path"].unlink(
+        missing_ok=True
+    )
+
+
     print(
         "POST SUCCESS:",
-        required
+        required,
+        "| NSFW: true"
     )
 
 
     return 0
 
 
+# ============================================================
+# 13. RUN
+# ============================================================
 
 if __name__ == "__main__":
 
     sys.exit(
         main()
     )
+```
