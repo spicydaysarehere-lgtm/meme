@@ -24,6 +24,7 @@ SUBREDDITS = [
     "CFNM_Hentai",
     "EcchiCurves",
     "animeplot",
+    "animegifs",
     "UnderOppai",
     "SideOppai",
     "DarkSkinnedAnimeBabes",
