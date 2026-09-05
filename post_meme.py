@@ -29,6 +29,7 @@ SUBREDDITS = [
     "SideOppai",
     "DarkSkinnedAnimeBabes",
     "AnimeLingerie",
+    "naughty_sexy_anime",
     "SFWWaifu"
 ]
 
