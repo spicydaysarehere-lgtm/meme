@@ -27,9 +27,12 @@ jobs:
 
     runs-on: ubuntu-latest
 
-
     steps:
 
+
+      # ======================================================
+      # CHECKOUT
+      # ======================================================
 
       - name: Checkout repository
 
@@ -42,6 +45,9 @@ jobs:
           ref: main
 
 
+      # ======================================================
+      # PYTHON
+      # ======================================================
 
       - name: Setup Python
 
@@ -52,6 +58,9 @@ jobs:
           python-version: "3.11"
 
 
+      # ======================================================
+      # FFMPEG
+      # ======================================================
 
       - name: Install FFmpeg
 
@@ -62,6 +71,9 @@ jobs:
           sudo apt-get install -y ffmpeg
 
 
+      # ======================================================
+      # PYTHON DEPENDENCIES
+      # ======================================================
 
       - name: Install dependencies
 
@@ -72,8 +84,11 @@ jobs:
           python -m pip install requests pillow
 
 
+      # ======================================================
+      # RUN BOT
+      # ======================================================
 
-      - name: Run bot
+      - name: Run Reddit Telegram Bot
 
         env:
 
@@ -86,6 +101,9 @@ jobs:
           python -u post_meme.py
 
 
+      # ======================================================
+      # SAVE POSTING HISTORY
+      # ======================================================
 
       - name: Save posting history
 
@@ -103,7 +121,7 @@ jobs:
 
           if git diff --cached --quiet; then
 
-            echo "No changes"
+            echo "No posting history changes."
 
             exit 0
 
@@ -115,16 +133,8 @@ jobs:
 
           git fetch origin main
 
-          git checkout main
+
+          git rebase origin/main || true
 
 
-          git merge origin/main --no-edit || true
-
-
-          git push origin main || (
-
-            git pull origin main --no-edit
-
-            git push origin main
-
-          )
+          git push origin main
